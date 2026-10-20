@@ -156,6 +156,13 @@ class _StoreScreenState extends State<StoreScreen> {
   Widget _buildHeader() {
     return Row(
       children: [
+        GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: const Icon(Icons.arrow_back_ios),
+        ),
+        const SizedBox(
+          width: 3,
+        ),
         Container(
           width: 48,
           height: 48,

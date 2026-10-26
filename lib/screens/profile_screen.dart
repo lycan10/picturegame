@@ -1,13 +1,49 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
+import '../core/game_data.dart';
 import '../theme/app_theme.dart';
+import 'achievement_screen.dart';
+import 'change_password_screen.dart';
+import 'edit_profile_screen.dart';
+import 'help_support_screen.dart';
+import 'login_screen.dart';
+import 'notification_settings_screen.dart';
+import 'privacy_security_screen.dart';
+import 'sound_settings_screen.dart';
 
-class ProfileScreen extends StatelessWidget {
+class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
   @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  GameData get game => GameData.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    game.addListener(_onGameData);
+    game.refreshProfile();
+  }
+
+  @override
+  void dispose() {
+    game.removeListener(_onGameData);
+    super.dispose();
+  }
+
+  void _onGameData() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final signedIn = game.isLoggedIn;
     return Scaffold(
       backgroundColor: AppColors.canvas,
       body: SafeArea(
@@ -17,8 +53,18 @@ class ProfileScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildHeader(),
+              if (_showEmailVerificationBanner) ...[
+                const SizedBox(height: 16),
+                _buildVerificationBanner(),
+              ],
               const SizedBox(height: 24),
               _buildProfileCard(),
+              // Signed-out state: the profile is viewable, but account-backed
+              // features get an explicit sign-in call to action.
+              if (!signedIn) ...[
+                const SizedBox(height: 16),
+                _buildSignedOutCard(),
+              ],
               const SizedBox(height: 24),
               _buildStatistics(),
               const SizedBox(height: 28),
@@ -44,6 +90,64 @@ class ProfileScreen extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// Shown only when playing without an account.
+  Widget _buildSignedOutCard() {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.purple.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.cloud_sync_rounded, size: 20, color: AppColors.purple),
+              SizedBox(width: 10),
+              Text(
+                'Your progress is local only',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.ink,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Create a free account to sync across devices, appear on the '
+            'leaderboard, battle friends and buy coins.',
+            style: TextStyle(
+              fontSize: 12.5,
+              height: 1.5,
+              color: AppColors.ink.withValues(alpha: 0.65),
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: () => Navigator.push<void>(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+              ),
+              icon: const Icon(Icons.person_add_alt_rounded, size: 18),
+              label: const Text('Sign in / Create account',
+                  style: TextStyle(fontWeight: FontWeight.w800)),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.purple,
+                minimumSize: const Size(0, 48),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -115,9 +219,8 @@ class ProfileScreen extends StatelessWidget {
                     width: 4,
                   ),
                 ),
-                child: const Text(
-                  '🧑',
-                  style: TextStyle(fontSize: 52),
+                child: ClipOval(
+                  child: _avatarContent(),
                 ),
               ),
               Positioned(
@@ -144,9 +247,9 @@ class ProfileScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
-          const Text(
-            'Player One',
-            style: TextStyle(
+          Text(
+            game.displayName,
+            style: const TextStyle(
               color: Colors.white,
               fontSize: 23,
               fontWeight: FontWeight.w800,
@@ -154,7 +257,7 @@ class ProfileScreen extends StatelessWidget {
           ),
           const SizedBox(height: 5),
           Text(
-            '@player_one',
+            '@${game.username}',
             style: TextStyle(
               color: Colors.white.withValues(alpha: 0.8),
               fontSize: 13,
@@ -170,18 +273,20 @@ class ProfileScreen extends StatelessWidget {
               color: Colors.white.withValues(alpha: 0.18),
               borderRadius: BorderRadius.circular(30),
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                FaIcon(
+                const FaIcon(
                   FontAwesomeIcons.medal,
                   size: 15,
                   color: Color(0xFFFFD76A),
                 ),
-                SizedBox(width: 8),
+                const SizedBox(width: 8),
                 Text(
-                  'Level 5 Explorer',
-                  style: TextStyle(
+                  game.isGuest
+                      ? 'Guest — tap Edit to save progress'
+                      : 'Level ${_playerTitleLevel()} ${_playerTitle()}',
+                  style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w700,
                     fontSize: 12,
@@ -194,9 +299,22 @@ class ProfileScreen extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: () {},
+              onPressed: () {
+                Navigator.push<void>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => game.isLoggedIn && !game.isGuest
+                        ? const EditProfileScreen()
+                        : LoginScreen(
+                            isGuestUpgrade: game.isLoggedIn && game.isGuest,
+                          ),
+                  ),
+                );
+              },
               icon: const Icon(Icons.edit_outlined, size: 18),
-              label: const Text('Edit Profile'),
+              label: Text(game.isLoggedIn && !game.isGuest
+                  ? 'Edit Profile'
+                  : 'Sign in to sync'),
               style: OutlinedButton.styleFrom(
                 foregroundColor: Colors.white,
                 side: BorderSide(
@@ -214,13 +332,205 @@ class ProfileScreen extends StatelessWidget {
     );
   }
 
+  /// Uploaded photo when present, otherwise the emoji avatar.
+  Widget _avatarContent() {
+    final photoUrl = game.avatarNetworkUrl();
+    if (photoUrl == null) {
+      return Center(
+        child: Text(
+          game.avatarEmoji,
+          style: const TextStyle(fontSize: 52),
+        ),
+      );
+    }
+    return Image.network(
+      photoUrl,
+      width: 94,
+      height: 94,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => Center(
+        child: Text(
+          game.avatarEmoji,
+          style: const TextStyle(fontSize: 52),
+        ),
+      ),
+    );
+  }
+
+  bool get _showEmailVerificationBanner =>
+      game.isLoggedIn && !game.isGuest && !game.emailVerified;
+
+  Widget _buildVerificationBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF4D9),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFFFD76A)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.mark_email_unread_outlined,
+              size: 22, color: Color(0xFF9A6B00)),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text(
+              'Confirm your email to keep your account recoverable.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Color(0xFF7A5500),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: _showVerifyEmailDialog,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              minimumSize: Size.zero,
+            ),
+            child: const Text(
+              'Verify',
+              style: TextStyle(
+                color: Color(0xFF9A6B00),
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Code entry dialog for email confirmation, with resend.
+  Future<void> _showVerifyEmailDialog() async {
+    final codeController = TextEditingController();
+    String? dialogError;
+    String? dialogInfo;
+    bool sending = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Verify your email'),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Enter the 6-digit code we emailed to ${game.user?['email'] ?? 'your address'}.',
+                style: const TextStyle(fontSize: 13, color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: codeController,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 22,
+                  letterSpacing: 8,
+                  fontWeight: FontWeight.w800,
+                ),
+                decoration: const InputDecoration(
+                  counterText: '',
+                  hintText: '••••••',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              if (dialogError != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  dialogError!,
+                  style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                ),
+              ],
+              if (dialogInfo != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  dialogInfo!,
+                  style: const TextStyle(
+                    color: Color(0xFF38B878),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: sending
+                  ? null
+                  : () async {
+                      setDialogState(() {
+                        sending = true;
+                        dialogError = null;
+                        dialogInfo = null;
+                      });
+                      final err =
+                          await GameData.instance.resendVerificationEmail();
+                      if (!dialogContext.mounted) return;
+                      setDialogState(() {
+                        sending = false;
+                        if (err != null) {
+                          dialogError = err;
+                        } else {
+                          dialogInfo = 'A fresh code is on its way — check your inbox.';
+                        }
+                      });
+                    },
+              child: const Text('Resend code'),
+            ),
+            FilledButton(
+              onPressed: sending
+                  ? null
+                  : () async {
+                      final code = codeController.text.trim();
+                      if (code.length != 6) {
+                        setDialogState(
+                            () => dialogError = 'Enter the 6-digit code');
+                        return;
+                      }
+                      setDialogState(() {
+                        sending = true;
+                        dialogError = null;
+                      });
+                      final err = await GameData.instance.verifyEmailCode(code);
+                      if (!dialogContext.mounted) return;
+                      if (err == null) {
+                        Navigator.pop(dialogContext);
+                        if (!mounted) return;
+                        _showMessage(context, 'Email verified — thanks!');
+                      } else {
+                        setDialogState(() {
+                          sending = false;
+                          dialogError = err;
+                        });
+                      }
+                    },
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.purple,
+              ),
+              child: const Text('Verify'),
+            ),
+          ],
+        ),
+      ),
+    );
+    codeController.dispose();
+  }
+
   Widget _buildStatistics() {
     return Row(
       children: [
         Expanded(
           child: _statCard(
             icon: Icons.stars_rounded,
-            value: '2,450',
+            value: _formatNumber(game.totalScore),
             label: 'Total Points',
             color: const Color(0xFFFFB938),
           ),
@@ -229,7 +539,7 @@ class ProfileScreen extends StatelessWidget {
         Expanded(
           child: _statCard(
             icon: Icons.check_circle_rounded,
-            value: '24',
+            value: '${game.levelsToday + _completedLevelsCached()}',
             label: 'Levels Won',
             color: const Color(0xFF38B878),
           ),
@@ -238,13 +548,38 @@ class ProfileScreen extends StatelessWidget {
         Expanded(
           child: _statCard(
             icon: Icons.local_fire_department_rounded,
-            value: '7 days',
+            value: '${game.streakDays} days',
             label: 'Streak',
             color: const Color(0xFFFF7959),
           ),
         ),
       ],
     );
+  }
+
+  String _formatNumber(int number) {
+    return number.toString().replaceAllMapped(
+          RegExp(r'(\d)(?=(\d{3})+$)'),
+          (match) => '${match[1]},',
+        );
+  }
+
+  int _completedLevelsCached() {
+    var count = 0;
+    for (final stars in game.bestStars.values) {
+      count += stars.values.where((s) => s > 0).length;
+    }
+    return count;
+  }
+
+  int _playerTitleLevel() {
+    final levels = _completedLevelsCached();
+    return (levels / 3).floor() + 1;
+  }
+
+  String _playerTitle() {
+    const titles = ['Rookie', 'Explorer', 'Adventurer', 'Master', 'Legend'];
+    return titles[min(_playerTitleLevel() - 1, titles.length - 1)];
   }
 
   Widget _statCard({
@@ -306,10 +641,16 @@ class ProfileScreen extends StatelessWidget {
         ),
         if (action != null)
           TextButton(
-            onPressed: () {},
-            child: const Text(
-              'View all',
-              style: TextStyle(
+            onPressed: action == 'View all'
+                ? () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const AchievementsScreen()),
+                    )
+                : () {},
+            child: Text(
+              action,
+              style: const TextStyle(
                 color: AppColors.purple,
                 fontWeight: FontWeight.w700,
               ),
@@ -319,42 +660,47 @@ class ProfileScreen extends StatelessWidget {
     );
   }
 
+  /// Four highlights from the real, server-computed achievement list —
+  /// unlocked first, then the ones closest to unlocking. Full list in
+  /// AchievementsScreen (via "View all").
   Widget _buildAchievements() {
-    final achievements = [
-      {
-        'icon': Icons.flag_rounded,
-        'title': 'First Win',
-        'subtitle': 'Win your first level',
-        'color': const Color(0xFFFFC857),
-        'unlocked': true,
-      },
-      {
-        'icon': Icons.bolt_rounded,
-        'title': 'Speedster',
-        'subtitle': 'Match in record time',
-        'color': const Color(0xFF62B8FF),
-        'unlocked': true,
-      },
-      {
-        'icon': Icons.local_fire_department_rounded,
-        'title': 'On Fire',
-        'subtitle': 'Play 7 days in a row',
-        'color': const Color(0xFFFF8566),
-        'unlocked': true,
-      },
-      {
-        'icon': Icons.workspace_premium_rounded,
-        'title': 'Champion',
-        'subtitle': 'Earn 10,000 points',
-        'color': const Color(0xFFB5A0FF),
-        'unlocked': false,
-      },
-    ];
+    final byCategory = {
+      'daily': (
+        Icons.local_fire_department_rounded,
+        const Color(0xFFFF8566),
+      ),
+      'battle': (
+        Icons.sports_kabaddi_rounded,
+        const Color(0xFF62B8FF),
+      ),
+      'skill': (
+        Icons.bolt_rounded,
+        const Color(0xFFFFC857),
+      ),
+      'progress': (
+        Icons.workspace_premium_rounded,
+        const Color(0xFFB5A0FF),
+      ),
+      'special': (
+        Icons.auto_awesome_rounded,
+        const Color(0xFF38B878),
+      ),
+    };
+
+    final defs = [...game.achievements]
+      ..sort((a, b) {
+        // Unlocked first; within a group, closest to the target first.
+        if (a.unlocked != b.unlocked) return a.unlocked ? -1 : 1;
+        final pa = a.progress / (a.target == 0 ? 1 : a.target);
+        final pb = b.progress / (b.target == 0 ? 1 : b.target);
+        return pb.compareTo(pa);
+      });
+    final highlights = defs.take(4).toList();
 
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      itemCount: achievements.length,
+      itemCount: highlights.length,
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
         mainAxisSpacing: 12,
@@ -362,9 +708,13 @@ class ProfileScreen extends StatelessWidget {
         childAspectRatio: 1.18,
       ),
       itemBuilder: (context, index) {
-        final item = achievements[index];
-        final unlocked = item['unlocked'] as bool;
-        final color = item['color'] as Color;
+        final def = highlights[index];
+        final (icon, color) =
+            byCategory[def.category] ?? byCategory['progress']!;
+        final unlocked = def.unlocked;
+        final progressLabel = unlocked
+            ? (def.claimed ? 'Claimed ✓' : 'Reward ready!')
+            : '${def.progress}/${def.target}';
 
         return Container(
           padding: const EdgeInsets.all(14),
@@ -391,14 +741,16 @@ class ProfileScreen extends StatelessWidget {
                   shape: BoxShape.circle,
                 ),
                 child: Icon(
-                  item['icon'] as IconData,
+                  icon,
                   color: unlocked ? color : Colors.grey.shade400,
                   size: 23,
                 ),
               ),
               const SizedBox(height: 10),
               Text(
-                item['title'] as String,
+                def.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: unlocked ? AppColors.ink : Colors.grey,
                   fontSize: 13,
@@ -407,8 +759,19 @@ class ProfileScreen extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                item['subtitle'] as String,
-                maxLines: 2,
+                progressLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: unlocked ? color : Colors.grey,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                def.description,
+                maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: Colors.grey,
@@ -424,21 +787,26 @@ class ProfileScreen extends StatelessWidget {
   }
 
   Widget _buildAccountOptions(BuildContext context) {
+    final signedIn = game.isLoggedIn;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 15),
       decoration: BoxDecoration(
-        color: Colors.white,
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Column(
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 15),
+          child: Column(
         children: [
           _accountTile(
             icon: Icons.notifications_none_rounded,
             title: 'Notifications',
             subtitle: 'Manage your reminders',
-            onTap: () => _showMessage(
+            onTap: () => Navigator.push<void>(
               context,
-              'Notification settings coming soon.',
+              MaterialPageRoute(
+                  builder: (_) => const NotificationSettingsScreen()),
             ),
           ),
           _divider(),
@@ -446,40 +814,59 @@ class ProfileScreen extends StatelessWidget {
             icon: Icons.volume_up_outlined,
             title: 'Sound & Music',
             subtitle: 'Control game sounds',
-            onTap: () => _showMessage(
+            onTap: () => Navigator.push<void>(
               context,
-              'Sound settings coming soon.',
+              MaterialPageRoute(builder: (_) => const SoundSettingsScreen()),
             ),
           ),
           _divider(),
           _accountTile(
             icon: Icons.lock_outline_rounded,
             title: 'Privacy & Security',
-            subtitle: 'Manage your privacy',
-            onTap: () => _showMessage(
+            subtitle: 'Leaderboard visibility, data export, account deletion',
+            onTap: () => Navigator.push<void>(
               context,
-              'Privacy settings coming soon.',
+              MaterialPageRoute(
+                  builder: (_) => const PrivacySecurityScreen()),
             ),
           ),
           _divider(),
+          if (game.isLoggedIn && !game.isGuest) ...[
+            _accountTile(
+              icon: Icons.lock_outline_rounded,
+              title: 'Change Password',
+              subtitle: 'Update your password and sign out other devices',
+              onTap: () => Navigator.push<void>(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const ChangePasswordScreen(),
+                ),
+              ),
+            ),
+            _divider(),
+          ],
           _accountTile(
             icon: Icons.help_outline_rounded,
             title: 'Help & Support',
-            subtitle: 'Get help with the game',
-            onTap: () => _showMessage(
+            subtitle: 'How to play, scoring, battles and contact',
+            onTap: () => Navigator.push<void>(
               context,
-              'Support options coming soon.',
+              MaterialPageRoute(builder: (_) => const HelpSupportScreen()),
             ),
           ),
-          _divider(),
-          _accountTile(
-            icon: Icons.logout_rounded,
-            title: 'Log Out',
-            subtitle: 'Sign out of your account',
-            color: Colors.redAccent,
-            onTap: () => _showLogoutDialog(context),
-          ),
+          if (signedIn) ...[
+            _divider(),
+            _accountTile(
+              icon: Icons.logout_rounded,
+              title: 'Log Out',
+              subtitle: 'Sign out of your account',
+              color: Colors.redAccent,
+              onTap: () => _showLogoutDialog(context),
+            ),
+          ],
         ],
+        ),
+      ),
       ),
     );
   }
@@ -561,10 +948,18 @@ class ProfileScreen extends StatelessWidget {
           TextButton(
             onPressed: () {
               Navigator.pop(dialogContext);
-              _showMessage(
-                context,
-                'Connect authentication to enable logout.',
-              );
+              if (GameData.instance.isLoggedIn) {
+                GameData.instance.logout();
+                _showMessage(
+                  context,
+                  'Logged out. Your local progress stays on this device.',
+                );
+              } else {
+                _showMessage(
+                  context,
+                  'You are playing as a guest — nothing to sign out of.',
+                );
+              }
             },
             child: const Text(
               'Log Out',

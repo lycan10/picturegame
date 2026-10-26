@@ -1,8 +1,16 @@
-import 'dart:math';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
-import '../theme/app_theme.dart';
+import 'package:flutter/services.dart';
 
+import '../core/api_client.dart';
+import '../core/game_data.dart';
+import '../core/login_gate.dart';
+import '../theme/app_theme.dart';
+import 'battle_game_screen.dart';
+
+/// Battle Arena lobby: start a friend room, join one by code, or quick-match.
+/// Once a room goes active, this screen hands over to [BattleGameScreen].
 class BattleScreen extends StatefulWidget {
   const BattleScreen({super.key});
 
@@ -11,34 +19,362 @@ class BattleScreen extends StatefulWidget {
 }
 
 class _BattleScreenState extends State<BattleScreen> {
-  bool isSearching = false;
   bool isWaiting = false;
 
   String roomCode = '';
-  String selectedMode = 'Friend';
+  Timer? _pollTimer;
 
-  final int playerLives = 3;
-  final int opponentLives = 3;
+  /// Guards against late responses acting after the user backed out.
+  int _actionTicket = 0;
+  bool _searchDialogOpen = false;
+  bool _inviteDialogOpen = false;
 
-  void _createRoom() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    final random = Random();
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
 
+  Future<void> _createRoom() async {
+    // Battles need an account (opponent identity, ranking, results).
+    if (!await ensureSignedIn(context)) return;
+    if (!mounted) return;
+    final ticket = ++_actionTicket;
+
+    String code;
+    try {
+      final json = await ApiClient.instance.createBattleRoom();
+      code = json['code'] as String;
+    } on ApiException catch (err) {
+      if (!mounted || ticket != _actionTicket) return;
+      _showMessage(err.isNetworkError
+          ? "You're offline — battles need an internet connection."
+          : err.message);
+      return;
+    }
+
+    if (!mounted || ticket != _actionTicket) return;
     setState(() {
-      roomCode = List.generate(
-        6,
-        (_) => chars[random.nextInt(chars.length)],
-      ).join();
+      roomCode = code;
       isWaiting = true;
     });
 
     _showInviteDialog();
+    _startPolling();
+  }
+
+  Future<void> _quickMatch() async {
+    // Battles need an account (opponent identity, ranking, results).
+    if (!await ensureSignedIn(context)) return;
+    if (!mounted) return;
+    final ticket = ++_actionTicket;
+
+    _showSearchingDialog();
+
+    Map<String, dynamic> json;
+    try {
+      json = await ApiClient.instance.quickMatch();
+    } on ApiException catch (err) {
+      if (!mounted || ticket != _actionTicket) return;
+      _closeSearchDialog();
+      _showMessage(err.isNetworkError
+          ? 'Quick match needs an internet connection.'
+          : err.message);
+      return;
+    }
+
+    if (!mounted || ticket != _actionTicket) return;
+    final code = json['code'] as String;
+    final status = json['status'] as String?;
+
+    // Someone was already waiting — the join happened server-side.
+    if (status == 'active') {
+      await _enterBattle(code);
+      return;
+    }
+
+    setState(() => roomCode = code);
+    _startPolling();
+  }
+
+  Future<void> _joinByCode() async {
+    // Battles need an account (opponent identity, ranking, results).
+    if (!await ensureSignedIn(context)) return;
+    if (!mounted) return;
+
+    final controller = TextEditingController();
+    var joining = false;
+    String? error;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          void setJoining(bool value) =>
+              setDialogState(() => joining = value);
+          void setError(String? value) => setDialogState(() => error = value);
+
+          return AlertDialog(
+          backgroundColor: AppColors.canvas,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          title: const Text(
+            'Join a Battle',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: AppColors.ink,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Enter the 6-character code your friend shared.',
+                style: TextStyle(fontSize: 13, color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                textCapitalization: TextCapitalization.characters,
+                maxLength: 6,
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 6,
+                  color: AppColors.purple,
+                ),
+                decoration: InputDecoration(
+                  counterText: '',
+                  filled: true,
+                  fillColor: Colors.white,
+                  hintText: 'ABC123',
+                  errorText: error,
+                ),
+                onSubmitted: (_) => _submitJoin(
+                  dialogContext,
+                  controller,
+                  setJoining,
+                  setError,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+          ElevatedButton.icon(
+              onPressed: joining
+                  ? null
+                  : () => _submitJoin(
+                      dialogContext,
+                      controller,
+                      setJoining,
+                      setError,
+                    ),
+              icon: joining
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.login_rounded, size: 18),
+              label: const Text('Join Battle'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.purple,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ],
+        );
+        },
+      ),
+    );
+  }
+
+  Future<void> _submitJoin(
+    BuildContext dialogContext,
+    TextEditingController controller,
+    void Function(bool) setJoining,
+    void Function(String?) setError,
+  ) async {
+    final code = controller.text.trim().toUpperCase();
+    if (code.length != 6) {
+      setError('Enter the full 6-character code');
+      return;
+    }
+
+    setJoining(true);
+    try {
+      final json = await ApiClient.instance.joinBattleRoom(code);
+      if (!dialogContext.mounted) return;
+      final status = json['status'] as String?;
+      if (status != 'active') {
+        setJoining(false);
+        setError('That room is no longer available');
+        return;
+      }
+      Navigator.pop(dialogContext);
+      await _enterBattle(code);
+    } on ApiException catch (err) {
+      if (!dialogContext.mounted) return;
+      setJoining(false);
+      setError(err.isNetworkError ? 'No connection — try again' : err.message);
+    }
+  }
+
+  /// Closes any open waiting/search dialog and opens the live battle.
+  Future<void> _enterBattle(String code) async {
+    _pollTimer?.cancel();
+    if (mounted && (_searchDialogOpen || _inviteDialogOpen)) {
+      _searchDialogOpen = false;
+      _inviteDialogOpen = false;
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+    if (!mounted) return;
+
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute(builder: (_) => BattleGameScreen(code: code)),
+    );
+
+    if (!mounted) return;
+    setState(() {
+      isWaiting = false;
+      roomCode = '';
+    });
+  }
+
+  /// Polls the battle room every 2s while waiting; an active state means an
+  /// opponent joined and gameplay can begin.
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+      final code = roomCode;
+      if (code.isEmpty) {
+        timer.cancel();
+        return;
+      }
+      try {
+        final state = await ApiClient.instance.battleState(code);
+        final status = state['status'] as String?;
+        if (!mounted || status == null) return;
+        if (status == 'active') {
+          timer.cancel();
+          await _enterBattle(code);
+        } else if (status == 'expired') {
+          timer.cancel();
+          _closeDialogs();
+          setState(() {
+            isWaiting = false;
+            roomCode = '';
+          });
+          _showMessage('The room closed — no one joined in time.');
+        }
+      } on ApiException {
+        // Offline — keep waiting quietly.
+      }
+    });
+  }
+
+  void _closeDialogs() {
+    if (_searchDialogOpen || _inviteDialogOpen) {
+      _searchDialogOpen = false;
+      _inviteDialogOpen = false;
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  void _closeSearchDialog() {
+    if (_searchDialogOpen) {
+      _searchDialogOpen = false;
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  void _cancelRoom() async {
+    _actionTicket++; // invalidate in-flight requests
+    _pollTimer?.cancel();
+    final code = roomCode;
+    if (code.isNotEmpty && GameData.instance.isLoggedIn) {
+      try {
+        await ApiClient.instance.cancelBattleRoom(code);
+      } on ApiException {
+        // Best effort — the room also expires on its own.
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      isWaiting = false;
+      roomCode = '';
+    });
+  }
+
+  void _copyCode() {
+    Clipboard.setData(ClipboardData(text: roomCode));
+    _showMessage('Battle code copied — send it to your friend!');
+  }
+
+  void _showSearchingDialog() {
+    _searchDialogOpen = true;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.canvas,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(color: AppColors.purple),
+            const SizedBox(height: 20),
+            const Text(
+              'Searching for an opponent…',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: AppColors.ink,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'This usually only takes a moment.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.withValues(alpha: 0.9),
+              ),
+            ),
+            const SizedBox(height: 18),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _searchDialogOpen = false;
+                _cancelRoom();
+              },
+              child: const Text(
+                'Cancel Search',
+                style: TextStyle(color: Colors.redAccent),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showInviteDialog() {
+    _inviteDialogOpen = true;
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
         backgroundColor: AppColors.canvas,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(24),
@@ -117,19 +453,24 @@ class _BattleScreenState extends State<BattleScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _inviteDialogOpen = false;
+            },
             child: const Text(
-              'Cancel',
+              'Close',
               style: TextStyle(color: Colors.grey),
             ),
           ),
           ElevatedButton.icon(
             onPressed: () {
-              Navigator.pop(context);
-              _showMessage('Connect sharing to invite your friend.');
+              Clipboard.setData(ClipboardData(text: roomCode));
+              Navigator.pop(dialogContext);
+              _inviteDialogOpen = false;
+              _showMessage('Battle code copied — send it to your friend!');
             },
             icon: const Icon(Icons.share_rounded, size: 18),
-            label: const Text('Share Code'),
+            label: const Text('Copy Code'),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.purple,
               foregroundColor: Colors.white,
@@ -139,59 +480,6 @@ class _BattleScreenState extends State<BattleScreen> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  void _quickMatch() {
-    setState(() {
-      isSearching = true;
-      selectedMode = 'Quick Match';
-    });
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: AppColors.canvas,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            const CircularProgressIndicator(
-              color: AppColors.purple,
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'Finding an Opponent',
-              style: TextStyle(
-                fontSize: 19,
-                fontWeight: FontWeight.bold,
-                color: AppColors.ink,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Searching for a worthy challenger...',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 20),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
-                setState(() => isSearching = false);
-              },
-              child: const Text(
-                'Cancel Search',
-                style: TextStyle(color: Colors.redAccent),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -238,6 +526,14 @@ class _BattleScreenState extends State<BattleScreen> {
                 subtitle: 'Find an opponent and start playing',
                 tag: 'LIVE',
                 onTap: _quickMatch,
+              ),
+              const SizedBox(height: 12),
+              _buildBattleOption(
+                icon: Icons.keyboard_alt_outlined,
+                title: 'Enter Battle Code',
+                subtitle: 'Got a code from a friend? Jump in',
+                tag: 'JOIN',
+                onTap: _joinByCode,
               ),
               const SizedBox(height: 28),
               _buildSectionTitle(
@@ -671,20 +967,33 @@ class _BattleScreenState extends State<BattleScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          Text(
-            'Room: $roomCode',
-            style: const TextStyle(
-              fontSize: 13,
-              color: AppColors.purple,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.5,
+          InkWell(
+            onTap: _copyCode,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.all(2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Room: $roomCode',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.purple,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.copy_rounded,
+                      size: 14, color: AppColors.purple),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 12),
           TextButton(
-            onPressed: () {
-              setState(() => isWaiting = false);
-            },
+            onPressed: _cancelRoom,
             child: const Text(
               'Cancel Room',
               style: TextStyle(color: Colors.redAccent),

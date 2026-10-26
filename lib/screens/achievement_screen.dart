@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../core/game_data.dart';
+import '../core/login_gate.dart';
 import '../theme/app_theme.dart';
 
 enum AchievementCategory {
@@ -40,6 +42,22 @@ class Achievement {
       target == 0 ? 0 : (progress / target).clamp(0.0, 1.0);
 }
 
+const Map<String, AchievementCategory> _categoryMap = {
+  'daily': AchievementCategory.daily,
+  'battle': AchievementCategory.battle,
+  'skill': AchievementCategory.skill,
+  'progress': AchievementCategory.progress,
+  'special': AchievementCategory.special,
+};
+
+const Map<AchievementCategory, IconData> _categoryIcons = {
+  AchievementCategory.daily: Icons.local_fire_department_rounded,
+  AchievementCategory.battle: Icons.sports_esports_rounded,
+  AchievementCategory.skill: Icons.psychology_rounded,
+  AchievementCategory.progress: Icons.trending_up_rounded,
+  AchievementCategory.special: Icons.workspace_premium_rounded,
+};
+
 class AchievementsScreen extends StatefulWidget {
   const AchievementsScreen({super.key});
 
@@ -50,234 +68,43 @@ class AchievementsScreen extends StatefulWidget {
 class _AchievementsScreenState extends State<AchievementsScreen> {
   AchievementCategory selectedCategory = AchievementCategory.all;
 
-  final Set<String> claimedRewards = {};
+  GameData get game => GameData.instance;
 
-  final List<Achievement> achievements = const [
-    // Daily rewards and streaks
-    Achievement(
-      id: 'first_login',
-      title: 'Welcome Back',
-      description: 'Log in for the first time.',
-      icon: Icons.waving_hand_rounded,
-      category: AchievementCategory.daily,
-      progress: 1,
-      target: 1,
-      points: 50,
-    ),
-    Achievement(
-      id: 'three_day_streak',
-      title: 'Getting Consistent',
-      description: 'Log in for 3 consecutive days.',
-      icon: Icons.local_fire_department_rounded,
-      category: AchievementCategory.daily,
-      progress: 2,
-      target: 3,
-      points: 100,
-    ),
-    Achievement(
-      id: 'seven_day_streak',
-      title: 'Week Warrior',
-      description: 'Maintain a 7-day login streak.',
-      icon: Icons.calendar_month_rounded,
-      category: AchievementCategory.daily,
-      progress: 4,
-      target: 7,
-      points: 250,
-    ),
-    Achievement(
-      id: 'thirty_day_streak',
-      title: 'Unstoppable',
-      description: 'Log in for 30 consecutive days.',
-      icon: Icons.bolt_rounded,
-      category: AchievementCategory.daily,
-      progress: 4,
-      target: 30,
-      points: 1000,
-      isSpecial: true,
-    ),
+  @override
+  void initState() {
+    super.initState();
+    game.addListener(_onGameData);
+    // Pull fresh server-computed progress.
+    game.refreshProfile();
+  }
 
-    // Battle achievements
-    Achievement(
-      id: 'first_battle',
-      title: 'Into the Arena',
-      description: 'Complete your first battle.',
-      icon: Icons.sports_esports_rounded,
-      category: AchievementCategory.battle,
-      progress: 1,
-      target: 1,
-      points: 100,
-    ),
-    Achievement(
-      id: 'five_wins',
-      title: 'Rising Champion',
-      description: 'Win 5 battles.',
-      icon: Icons.emoji_events_rounded,
-      category: AchievementCategory.battle,
-      progress: 3,
-      target: 5,
-      points: 250,
-    ),
-    Achievement(
-      id: 'twenty_five_wins',
-      title: 'Battle Legend',
-      description: 'Win 25 battles.',
-      icon: Icons.military_tech_rounded,
-      category: AchievementCategory.battle,
-      progress: 8,
-      target: 25,
-      points: 750,
-      isSpecial: true,
-    ),
-    Achievement(
-      id: 'ten_win_streak',
-      title: 'Win Streak',
-      description: 'Win 10 battles in a row.',
-      icon: Icons.whatshot_rounded,
-      category: AchievementCategory.battle,
-      progress: 2,
-      target: 10,
-      points: 500,
-    ),
-    Achievement(
-      id: 'comeback',
-      title: 'The Comeback',
-      description: 'Win a battle with only one heart remaining.',
-      icon: Icons.favorite_rounded,
-      category: AchievementCategory.battle,
-      progress: 0,
-      target: 1,
-      points: 300,
-    ),
-    Achievement(
-      id: 'perfect_battle',
-      title: 'Untouchable',
-      description: 'Win a battle without losing a heart.',
-      icon: Icons.shield_rounded,
-      category: AchievementCategory.battle,
-      progress: 0,
-      target: 1,
-      points: 350,
-    ),
+  @override
+  void dispose() {
+    game.removeListener(_onGameData);
+    super.dispose();
+  }
 
-    // Skill achievements
-    Achievement(
-      id: 'first_perfect',
-      title: 'Sharp Mind',
-      description: 'Answer 10 questions correctly in a row.',
-      icon: Icons.psychology_rounded,
-      category: AchievementCategory.skill,
-      progress: 7,
-      target: 10,
-      points: 200,
-    ),
-    Achievement(
-      id: 'speedster',
-      title: 'Speedster',
-      description: 'Answer 10 questions within 3 seconds each.',
-      icon: Icons.speed_rounded,
-      category: AchievementCategory.skill,
-      progress: 4,
-      target: 10,
-      points: 250,
-    ),
-    Achievement(
-      id: 'hundred_correct',
-      title: 'Word Wizard',
-      description: 'Match 100 pictures correctly.',
-      icon: Icons.auto_awesome_rounded,
-      category: AchievementCategory.skill,
-      progress: 63,
-      target: 100,
-      points: 400,
-    ),
-    Achievement(
-      id: 'flawless_round',
-      title: 'Perfect Round',
-      description: 'Complete 20 matches without a mistake.',
-      icon: Icons.stars_rounded,
-      category: AchievementCategory.skill,
-      progress: 0,
-      target: 20,
-      points: 500,
-    ),
+  void _onGameData() {
+    if (mounted) setState(() {});
+  }
 
-    // General progress
-    Achievement(
-      id: 'first_hundred',
-      title: 'Point Collector',
-      description: 'Earn your first 100 points.',
-      icon: Icons.brightness_7_rounded,
-      category: AchievementCategory.progress,
-      progress: 100,
-      target: 100,
-      points: 50,
-    ),
-    Achievement(
-      id: 'five_thousand',
-      title: 'High Scorer',
-      description: 'Earn 5,000 total points.',
-      icon: Icons.trending_up_rounded,
-      category: AchievementCategory.progress,
-      progress: 2450,
-      target: 5000,
-      points: 300,
-    ),
-    Achievement(
-      id: 'animal_expert',
-      title: 'Animal Expert',
-      description: 'Correctly identify 50 animals.',
-      icon: Icons.pets_rounded,
-      category: AchievementCategory.progress,
-      progress: 31,
-      target: 50,
-      points: 200,
-    ),
-    Achievement(
-      id: 'flag_master',
-      title: 'Flag Master',
-      description: 'Correctly identify 50 country flags.',
-      icon: Icons.flag_rounded,
-      category: AchievementCategory.progress,
-      progress: 12,
-      target: 50,
-      points: 200,
-    ),
-
-    // Special challenges
-    Achievement(
-      id: 'comeback_kid',
-      title: 'Never Give Up',
-      description: 'Return to the game after a 7-day absence.',
-      icon: Icons.restart_alt_rounded,
-      category: AchievementCategory.special,
-      progress: 0,
-      target: 1,
-      points: 150,
-      isSpecial: true,
-    ),
-    Achievement(
-      id: 'all_rounder',
-      title: 'All-Rounder',
-      description: 'Earn an achievement in every category.',
-      icon: Icons.workspace_premium_rounded,
-      category: AchievementCategory.special,
-      progress: 2,
-      target: 5,
-      points: 600,
-      isSpecial: true,
-    ),
-    Achievement(
-      id: 'early_bird',
-      title: 'Early Bird',
-      description: 'Complete a match before 8 AM.',
-      icon: Icons.wb_sunny_rounded,
-      category: AchievementCategory.special,
-      progress: 0,
-      target: 1,
-      points: 100,
-      isSpecial: true,
-    ),
-  ];
+  /// Server-driven achievement progress; falls back to the built-in catalog
+  /// while offline (progress then comes from the last cached sync).
+  List<Achievement> get achievements => game.achievements
+      .map((def) => Achievement(
+            id: def.id,
+            title: def.title,
+            description: def.description,
+            icon: _categoryIcons[_categoryMap[def.category]] ??
+                Icons.emoji_events_rounded,
+            category: _categoryMap[def.category] ?? AchievementCategory.special,
+            progress: def.progress,
+            target: def.target,
+            points: def.points,
+            claimed: def.claimed,
+            isSpecial: def.isSpecial,
+          ))
+      .toList();
 
   List<Achievement> get filteredAchievements {
     if (selectedCategory == AchievementCategory.all) {
@@ -295,23 +122,23 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
 
   int get claimedPoints {
     return achievements
-        .where((item) => claimedRewards.contains(item.id))
+        .where((item) => item.claimed)
         .fold(0, (sum, item) => sum + item.points);
   }
 
-  void _claimReward(Achievement achievement) {
-    if (!achievement.isUnlocked || claimedRewards.contains(achievement.id)) {
-      return;
-    }
+  Future<void> _claimReward(Achievement achievement) async {
+    if (!achievement.isUnlocked || achievement.claimed) return;
+    // Claiming credits points to an account — sign in first.
+    if (!await ensureSignedIn(context)) return;
 
-    setState(() {
-      claimedRewards.add(achievement.id);
-    });
+    final error = await game.claimAchievement(achievement.id);
+    if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          '+${achievement.points} points claimed for ${achievement.title}!',
+          error ??
+              '+${achievement.points} points claimed for ${achievement.title}!',
         ),
         behavior: SnackBarBehavior.floating,
       ),
@@ -360,7 +187,7 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
           onTap: () => Navigator.pop(context),
           child: const Icon(Icons.arrow_back_ios),
         ),
-        SizedBox(
+        const SizedBox(
           width: 3,
         ),
         Container(
@@ -563,11 +390,11 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
             ),
           ),
           const SizedBox(width: 14),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                const Text(
                   'Daily Login Reward',
                   style: TextStyle(
                     color: AppColors.ink,
@@ -575,8 +402,8 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
                     fontSize: 15,
                   ),
                 ),
-                SizedBox(height: 5),
-                Text(
+                const SizedBox(height: 5),
+                const Text(
                   'Come back every day to build your streak.',
                   style: TextStyle(
                     color: Colors.black54,
@@ -584,8 +411,8 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
                     height: 1.4,
                   ),
                 ),
-                SizedBox(height: 7),
-                Row(
+                const SizedBox(height: 7),
+                const Row(
                   children: [
                     Icon(
                       Icons.stars_rounded,
@@ -602,6 +429,31 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      // Daily rewards live on the account — sign in first.
+                      if (!await ensureSignedIn(context)) return;
+                      final error = await game.claimDailyReward();
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(error ?? 'Daily reward claimed! +25 points'),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.redeem_rounded, size: 17),
+                    label: const Text('Claim today'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFB77900),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -693,7 +545,7 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
 
   Widget _buildAchievementCard(Achievement achievement) {
     final unlocked = achievement.isUnlocked;
-    final claimed = claimedRewards.contains(achievement.id);
+    final claimed = achievement.claimed;
     final color =
         achievement.isSpecial ? const Color(0xFFB77900) : AppColors.purple;
 

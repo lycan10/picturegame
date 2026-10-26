@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
+import '../core/ads_service.dart';
+import '../core/game_data.dart';
+import '../core/login_gate.dart';
+import '../core/sound_service.dart';
 import '../theme/app_theme.dart';
+import 'paystack_checkout_screen.dart';
 
 class StoreScreen extends StatefulWidget {
   const StoreScreen({super.key});
@@ -9,11 +14,31 @@ class StoreScreen extends StatefulWidget {
 }
 
 class _StoreScreenState extends State<StoreScreen> {
-  int coinBalance = 250;
-  int hintBalance = 3;
+  GameData get game => GameData.instance;
+
+  int get coinBalance => game.coins;
+  int get hintBalance => game.hints;
   int selectedTab = 0;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    game.addListener(_onGameData);
+  }
+
+  @override
+  void dispose() {
+    game.removeListener(_onGameData);
+    super.dispose();
+  }
+
+  void _onGameData() {
+    if (mounted) setState(() {});
+  }
 
   void _showMessage(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -22,27 +47,68 @@ class _StoreScreenState extends State<StoreScreen> {
     );
   }
 
-  void _watchAd(String rewardType) {
-    // TODO: Show a rewarded ad and grant the reward only
-    // after the ad SDK confirms the reward callback.
-    _showMessage(
-      'Connect rewarded ads to earn $rewardType.',
-    );
+  /// Paystack checkout: initialize → hosted WebView → server-verified
+  /// settlement. Requires a real account (Paystack needs an email and the
+  /// receipt must attach to a durable identity).
+  Future<void> _purchase(String productId, String label) async {
+    if (_busy) return;
+    if (!await ensureSignedIn(context)) return;
+
+    setState(() => _busy = true);
+    try {
+      final session = await game.startCheckout(productId);
+      if (!mounted) return;
+
+      final completed = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              PaystackCheckoutScreen(checkoutUrl: session['checkoutUrl'] as String),
+        ),
+      );
+
+      // Always verify — payments can succeed even when the user backs out
+      // before the close redirect, and the webhook may have settled already.
+      final error = await game.verifyPurchase(session['reference'] as String);
+      if (!mounted) return;
+      if (error == null) {
+        playSfx(Sfx.coin);
+        _showMessage('$label added to your wallet! 🎉');
+      } else if (completed == true) {
+        _showMessage(error);
+      }
+    } catch (err) {
+      _showMessage(
+        err.toString().contains('offline')
+            ? 'You need an internet connection to purchase.'
+            : 'Could not start checkout. Please try again.',
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
-  void _purchaseCoins(int coins, String productId) {
-    // TODO: Connect to Google Play Billing / Apple StoreKit.
-    // Grant coins only after verified purchase confirmation.
-    _showMessage(
-      'Connect in-app purchases for $productId.',
-    );
-  }
+  /// Rewarded ad → AdMob's earned callback → server-granted reward
+  /// (daily-capped). Requires a real account.
+  Future<void> _watchAd(String rewardType) async {
+    if (_busy) return;
+    if (!await ensureSignedIn(context)) return;
 
-  void _purchaseHints(int hints, String productId) {
-    // TODO: Connect to in-app purchases or use earned coins.
-    _showMessage(
-      'Connect in-app purchases for $productId.',
+    final kind = rewardType.contains('hint') ? 'hints' : 'coins';
+    final granted = await AdsService.instance.showRewarded(
+      onEarned: () {
+        // Fire-and-forget; the wallet listener refreshes the UI on grant.
+        GameData.instance.watchAdReward(kind);
+      },
+      onClosed: () {},
     );
+
+    if (!mounted) return;
+    if (!granted) {
+      _showMessage('No ad available right now — try again in a moment.');
+      return;
+    }
+    _showMessage('Reward confirmed: $rewardType!');
   }
 
   @override
@@ -70,7 +136,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildCoinBundle(
                   title: 'Starter Pack',
                   coins: 500,
-                  price: '\$0.99',
+                  price: '₦1,500',
                   icon: Icons.savings_rounded,
                   color: const Color(0xFF10B981),
                   productId: 'coins_500',
@@ -78,7 +144,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildCoinBundle(
                   title: 'Popular Pack',
                   coins: 1500,
-                  price: '\$1.99',
+                  price: '₦3,000',
                   icon: Icons.monetization_on_rounded,
                   color: const Color(0xFF7C3AED),
                   productId: 'coins_1500',
@@ -87,7 +153,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildCoinBundle(
                   title: 'Mega Pack',
                   coins: 4000,
-                  price: '\$4.99',
+                  price: '₦7,500',
                   icon: Icons.diamond_rounded,
                   color: const Color(0xFFF59E0B),
                   productId: 'coins_4000',
@@ -95,7 +161,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildCoinBundle(
                   title: 'Ultimate Pack',
                   coins: 10000,
-                  price: '\$9.99',
+                  price: '₦15,000',
                   icon: Icons.workspace_premium_rounded,
                   color: const Color(0xFFEC4899),
                   productId: 'coins_10000',
@@ -110,14 +176,14 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildHintBundle(
                   title: 'Quick Help',
                   hints: 3,
-                  price: '\$0.99',
+                  price: '₦1,500',
                   description: 'Perfect for a tricky question.',
                   productId: 'hints_3',
                 ),
                 _buildHintBundle(
                   title: 'Smart Player',
                   hints: 10,
-                  price: '\$1.99',
+                  price: '₦3,000',
                   description: 'Keep your streak alive.',
                   productId: 'hints_10',
                   badge: 'POPULAR',
@@ -125,7 +191,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildHintBundle(
                   title: 'Hint Master',
                   hints: 30,
-                  price: '\$4.99',
+                  price: '₦7,500',
                   description: 'A generous supply of extra help.',
                   productId: 'hints_30',
                   badge: 'BEST VALUE',
@@ -279,36 +345,40 @@ class _StoreScreenState extends State<StoreScreen> {
             ],
           ),
           const SizedBox(height: 20),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Row(
-              children: [
-                const Icon(
-                  Icons.play_circle_fill_rounded,
-                  color: Colors.white,
-                  size: 23,
-                ),
-                const SizedBox(width: 10),
-                const Expanded(
-                  child: Text(
-                    'Watch an ad to earn free rewards',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => _watchAd('coins'),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.play_circle_fill_rounded,
+                    color: Colors.white,
+                    size: 23,
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Watch an ad to earn free rewards',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                ),
-                Icon(
-                  Icons.arrow_forward_ios_rounded,
-                  color: Colors.white.withValues(alpha: 0.8),
-                  size: 14,
-                ),
+                  Icon(
+                    Icons.arrow_forward_ios_rounded,
+                    color: Colors.white.withValues(alpha: 0.8),
+                    size: 14,
+                  ),
               ],
+              ),
             ),
           ),
         ],
@@ -558,7 +628,7 @@ class _StoreScreenState extends State<StoreScreen> {
           ),
           const SizedBox(width: 8),
           ElevatedButton(
-            onPressed: () => _purchaseCoins(coins, productId),
+            onPressed: () => _purchase(productId, '$coins coins'),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.purple,
               foregroundColor: Colors.white,
@@ -678,7 +748,7 @@ class _StoreScreenState extends State<StoreScreen> {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: () => _purchaseHints(hints, productId),
+              onPressed: () => _purchase(productId, '$hints hints'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.purple,
                 foregroundColor: Colors.white,

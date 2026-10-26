@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../data/game_levels.dart';
+import '../core/game_data.dart';
 import '../models/game_level.dart';
 import '../theme/app_theme.dart';
 import 'match_game_screen.dart';
@@ -24,8 +24,7 @@ class LevelSelectionScreen extends StatefulWidget {
 }
 
 class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
-  List<GameLevel> get levels =>
-      widget.category == 'animals' ? animalLevels : countryLevels;
+  List<GameLevel> get levels => GameData.instance.levelsFor(widget.category);
 
   String get title =>
       widget.category == 'animals' ? 'Animal Kingdom' : 'Flags of the World';

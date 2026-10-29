@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import '../core/ads_service.dart';
 import '../core/game_data.dart';
+import '../core/iap_service.dart';
 import '../core/login_gate.dart';
-import '../core/sound_service.dart';
 import '../theme/app_theme.dart';
-import 'paystack_checkout_screen.dart';
 
 class StoreScreen extends StatefulWidget {
   const StoreScreen({super.key});
@@ -25,15 +24,21 @@ class _StoreScreenState extends State<StoreScreen> {
   void initState() {
     super.initState();
     game.addListener(_onGameData);
+    IapService.instance.addListener(_onIapData);
   }
 
   @override
   void dispose() {
     game.removeListener(_onGameData);
+    IapService.instance.removeListener(_onIapData);
     super.dispose();
   }
 
   void _onGameData() {
+    if (mounted) setState(() {});
+  }
+
+  void _onIapData() {
     if (mounted) setState(() {});
   }
 
@@ -47,42 +52,18 @@ class _StoreScreenState extends State<StoreScreen> {
     );
   }
 
-  /// Paystack checkout: initialize → hosted WebView → server-verified
-  /// settlement. Requires a real account (Paystack needs an email and the
-  /// receipt must attach to a durable identity).
+  /// In-App Purchase: invokes native Google Play Billing or Apple StoreKit
   Future<void> _purchase(String productId, String label) async {
     if (_busy) return;
-    if (!await ensureSignedIn(context)) return;
 
     setState(() => _busy = true);
     try {
-      final session = await game.startCheckout(productId);
-      if (!mounted) return;
-
-      final completed = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(
-          builder: (_) =>
-              PaystackCheckoutScreen(checkoutUrl: session['checkoutUrl'] as String),
-        ),
-      );
-
-      // Always verify — payments can succeed even when the user backs out
-      // before the close redirect, and the webhook may have settled already.
-      final error = await game.verifyPurchase(session['reference'] as String);
-      if (!mounted) return;
-      if (error == null) {
-        playSfx(Sfx.coin);
-        _showMessage('$label added to your wallet! 🎉');
-      } else if (completed == true) {
-        _showMessage(error);
+      final success = await IapService.instance.buyProduct(productId);
+      if (!success && mounted) {
+        // buyProduct handles user cancel or error internally via callbacks
       }
     } catch (err) {
-      _showMessage(
-        err.toString().contains('offline')
-            ? 'You need an internet connection to purchase.'
-            : 'Could not start checkout. Please try again.',
-      );
+      _showMessage('Could not initiate purchase: $err');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -136,7 +117,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildCoinBundle(
                   title: 'Starter Pack',
                   coins: 500,
-                  price: '₦1,500',
+                  price: IapService.instance.getLocalizedPrice('coins_500', '₦1,500'),
                   icon: Icons.savings_rounded,
                   color: const Color(0xFF10B981),
                   productId: 'coins_500',
@@ -144,7 +125,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildCoinBundle(
                   title: 'Popular Pack',
                   coins: 1500,
-                  price: '₦3,000',
+                  price: IapService.instance.getLocalizedPrice('coins_1500', '₦3,000'),
                   icon: Icons.monetization_on_rounded,
                   color: const Color(0xFF7C3AED),
                   productId: 'coins_1500',
@@ -153,7 +134,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildCoinBundle(
                   title: 'Mega Pack',
                   coins: 4000,
-                  price: '₦7,500',
+                  price: IapService.instance.getLocalizedPrice('coins_4000', '₦7,500'),
                   icon: Icons.diamond_rounded,
                   color: const Color(0xFFF59E0B),
                   productId: 'coins_4000',
@@ -161,7 +142,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildCoinBundle(
                   title: 'Ultimate Pack',
                   coins: 10000,
-                  price: '₦15,000',
+                  price: IapService.instance.getLocalizedPrice('coins_10000', '₦15,000'),
                   icon: Icons.workspace_premium_rounded,
                   color: const Color(0xFFEC4899),
                   productId: 'coins_10000',
@@ -176,14 +157,14 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildHintBundle(
                   title: 'Quick Help',
                   hints: 3,
-                  price: '₦1,500',
+                  price: IapService.instance.getLocalizedPrice('hints_3', '₦1,500'),
                   description: 'Perfect for a tricky question.',
                   productId: 'hints_3',
                 ),
                 _buildHintBundle(
                   title: 'Smart Player',
                   hints: 10,
-                  price: '₦3,000',
+                  price: IapService.instance.getLocalizedPrice('hints_10', '₦3,000'),
                   description: 'Keep your streak alive.',
                   productId: 'hints_10',
                   badge: 'POPULAR',
@@ -191,7 +172,7 @@ class _StoreScreenState extends State<StoreScreen> {
                 _buildHintBundle(
                   title: 'Hint Master',
                   hints: 30,
-                  price: '₦7,500',
+                  price: IapService.instance.getLocalizedPrice('hints_30', '₦7,500'),
                   description: 'A generous supply of extra help.',
                   productId: 'hints_30',
                   badge: 'BEST VALUE',

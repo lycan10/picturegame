@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "457768377190",
+    "project_id": "picture-game-b658f",
+    "storage_bucket": "picture-game-b658f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:457768377190:android:9c904d860bc84eab72c6a7",
+        "android_client_info": {
+          "package_name": "com.example.picture_match"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyATuFVEU2CqP8xcGIXdn6jPVKRC716K-js"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

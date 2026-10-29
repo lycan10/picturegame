@@ -2,6 +2,8 @@
     <!-- Network access for the backend API. Flutter only injects this into the
          debug/profile manifests, so release builds need it declared here. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- In-App Purchase billing permission -->
+    <uses-permission android:name="com.android.vending.BILLING" />
     <!-- Local daily-reminder notifications:
          POST_NOTIFICATIONS is requested at runtime on Android 13+;
          RECEIVE_BOOT_COMPLETED lets the notification plugin re-schedule the

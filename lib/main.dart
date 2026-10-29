@@ -1,15 +1,34 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'firebase_options.dart';
 import 'core/ads_service.dart';
 import 'core/app_config.dart';
 import 'core/game_data.dart';
+import 'core/games_services_manager.dart';
+import 'core/iap_service.dart';
 import 'core/sound_service.dart';
 import 'screens/home_screen.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Firebase and Crashlytics
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  // Pass all uncaught "fatal" errors from the framework to Crashlytics
+  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+
+  // Pass all uncaught asynchronous errors that aren't handled by the Flutter framework to Crashlytics
+  PlatformDispatcher.instance.onError = (error, stack) {
+    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+    return true;
+  };
 
   // Release builds must never talk to a cleartext backend: login tokens
   // over plain http are sniffable on any shared network. Debug builds keep
@@ -31,6 +50,23 @@ Future<void> main() async {
 
   // Sound effects + optional music (device-local settings).
   await SoundService.instance.init();
+
+  // Initialize In-App Purchases
+  try {
+    await IapService.instance.init();
+    IapService.instance.onPurchaseSuccess = (def) {
+      if (def.isCoins) {
+        GameData.instance.addCoins(def.rewardAmount);
+      } else {
+        GameData.instance.addHints(def.rewardAmount);
+      }
+    };
+  } catch (_) {}
+
+  // Silent sign-in to Apple Game Center / Google Play Games
+  try {
+    GameServicesManager.instance.signIn(silent: true);
+  } catch (_) {}
 
   runApp(const PictureMatchApp());
 }

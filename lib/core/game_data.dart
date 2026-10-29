@@ -718,6 +718,20 @@ class GameData extends ChangeNotifier {
     }
   }
 
+  /// Add coins directly to the player's wallet and persist locally/state.
+  Future<void> addCoins(int amount) async {
+    coins += amount;
+    await _persist();
+    notifyListeners();
+  }
+
+  /// Add hints directly to the player's wallet and persist locally/state.
+  Future<void> addHints(int amount) async {
+    hints += amount;
+    await _persist();
+    notifyListeners();
+  }
+
   Future<String?> watchAdReward(String kind) async {
     try {
       final json = await _api.rewardAd(kind);

@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/ads_service.dart';
 import '../core/api_client.dart';
 import '../core/game_data.dart';
+import '../core/sound_service.dart';
 import '../theme/app_theme.dart';
+import 'store_screen.dart';
 
 /// Live 1v1 battle: match the picture to the correct word before the 30s
 /// timer runs out. A wrong answer or timeout costs a heart; last player
@@ -25,7 +28,7 @@ class BattleGameScreen extends StatefulWidget {
 
 class _BattleGameScreenState extends State<BattleGameScreen> {
   static const _pollInterval = Duration(seconds: 2);
-  static const _roundSeconds = 30;
+  static const _roundSeconds = 15;
 
   Map<String, dynamic>? _state;
   bool _loading = true;
@@ -37,6 +40,16 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
   String? _feedback;
   bool _feedbackGood = false;
   int _lastRoundNo = 0;
+
+  // Hint state, per round. The clue sentence is NOT free in battles: the
+  // round payload carries it, but we only surface it after the player spends
+  // a hint. All spends go through GameData.useHint() (balance-checked and
+  // server-validated on sync).
+  bool _hintClueRevealed = false;
+  String? _hintEliminated; // a wrong option removed this round
+  bool _hintNudgeUsed = false; // nudge purchased this round
+  String? _nudgeFirstLetter; // from the server (word is hidden pre-answer)
+  int? _nudgeLength;
 
   Timer? _pollTimer;
   Timer? _tickTimer;
@@ -75,6 +88,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
   @override
   void initState() {
     super.initState();
+    GameData.instance.addListener(_onGameDataChanged);
     _refresh();
     _pollTimer = Timer.periodic(_pollInterval, (_) => _refresh());
     _tickTimer = Timer.periodic(
@@ -90,9 +104,14 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
 
   @override
   void dispose() {
+    GameData.instance.removeListener(_onGameDataChanged);
     _pollTimer?.cancel();
     _tickTimer?.cancel();
     super.dispose();
+  }
+
+  void _onGameDataChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _refresh() async {
@@ -130,6 +149,11 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
         _lastRoundNo = no;
         _selected = null;
         _feedback = null;
+        _hintClueRevealed = false;
+        _hintEliminated = null;
+        _hintNudgeUsed = false;
+        _nudgeFirstLetter = null;
+        _nudgeLength = null;
       }
 
       if (fromAnswer && round != null) {
@@ -204,8 +228,8 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
           style: TextStyle(fontWeight: FontWeight.w900, color: AppColors.ink),
         ),
         content: const Text(
-          "If you leave now you'll forfeit — your hearts will drain each "
-          'round until your opponent wins.',
+          "If you leave now you will forfeit the battle immediately, "
+          "ending the game and declaring your opponent the winner.",
           style: TextStyle(height: 1.5, fontSize: 14),
         ),
         actions: [
@@ -248,6 +272,9 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
         if (await _confirmLeave()) {
           _pollTimer?.cancel();
           _tickTimer?.cancel();
+          try {
+            await ApiClient.instance.battleForfeit(widget.code);
+          } catch (_) {}
           if (context.mounted) Navigator.of(context).pop();
         }
       },
@@ -358,6 +385,358 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     );
   }
 
+  // ---- Hints ----------------------------------------------------------------
+
+  /// Same mechanics as the single-player hint sheet: each costs 1 hint from
+  /// the wallet, enforced through GameData.useHint() (server re-validates on
+  /// sync). Empty wallet opens the recovery dialog instead.
+  Future<void> _openHintSheet() async {
+    final round = _round;
+    if (round == null || _iAnswered || _remaining <= Duration.zero) return;
+
+    if (GameData.instance.hints < 1) {
+      _showOutOfHints();
+      return;
+    }
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Choose a hint',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                        color: AppColors.ink,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: AppColors.palePurple,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.lightbulb_rounded,
+                            size: 14, color: AppColors.purple),
+                        const SizedBox(width: 4),
+                        Text(
+                          '${GameData.instance.hints} left',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.purple,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Each hint costs 1 hint. They reset every round.',
+                style: TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+              const SizedBox(height: 14),
+              _hintOption(
+                sheetContext,
+                kind: 'clue',
+                icon: Icons.visibility_rounded,
+                title: 'Reveal a clue',
+                subtitle: 'Show the clue sentence for this picture.',
+                used: _hintClueRevealed,
+              ),
+              const SizedBox(height: 10),
+              _hintOption(
+                sheetContext,
+                kind: 'remove',
+                icon: Icons.remove_circle_outline_rounded,
+                title: 'Remove a wrong option',
+                subtitle: 'Eliminate one wrong answer from the choices.',
+                used: _hintEliminated != null,
+              ),
+              const SizedBox(height: 10),
+              _hintOption(
+                sheetContext,
+                kind: 'nudge',
+                icon: Icons.lightbulb_circle_rounded,
+                title: 'Get a nudge',
+                subtitle: 'Reveal the first letter and word length.',
+                used: _hintNudgeUsed,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (choice == null || !mounted) return;
+    await _spendHintAndApply(choice);
+  }
+
+  Widget _hintOption(
+    BuildContext sheetContext, {
+    required String kind,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool used,
+  }) {
+    return Material(
+      color: used
+          ? Colors.grey.withValues(alpha: 0.12)
+          : AppColors.palePurple.withValues(alpha: 0.4),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: used ? null : () => Navigator.pop(sheetContext, kind),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Icon(icon,
+                    size: 22,
+                    color: used ? Colors.grey : AppColors.purple),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: used ? Colors.grey : AppColors.ink,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: AppColors.ink.withValues(alpha: 0.6),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (used)
+                const Text('Used',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.grey))
+              else
+                const Icon(Icons.chevron_right_rounded,
+                    size: 18, color: AppColors.purple),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Server-enforced spend: the endpoint debits the wallet atomically (D1)
+  /// and computes the hint, because the correct word never reaches the
+  /// client before the round resolves. The local mirror is updated from the
+  /// server balance after every spend.
+  Future<void> _spendHintAndApply(String kind) async {
+    final round = _round;
+    if (round == null || _submitting || !mounted) return;
+
+    final alreadyUsed = kind == 'clue'
+        ? _hintClueRevealed
+        : kind == 'remove'
+            ? _hintEliminated != null
+            : _hintNudgeUsed;
+    if (alreadyUsed) return;
+
+    final no = (round['no'] as num).toInt();
+    setState(() => _submitting = true);
+    try {
+      final json = await ApiClient.instance.battleHint(widget.code, no, kind);
+      if (!mounted) return;
+      if (json['hints'] != null) {
+        GameData.instance.setHints(json['hints'] as int);
+      }
+      setState(() {
+        _submitting = false;
+        switch (kind) {
+          case 'clue':
+            _hintClueRevealed = true;
+          case 'remove':
+            _hintEliminated = json['remove'] as String?;
+          case 'nudge':
+            _nudgeFirstLetter = json['firstLetter'] as String?;
+            _nudgeLength = json['length'] as int?;
+            _hintNudgeUsed = true;
+        }
+      });
+    } on ApiException catch (err) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      if (err.message.contains('Not enough hints')) {
+        _showOutOfHints();
+      } else if (err.isNetworkError) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No connection — try again')),
+        );
+      } else {
+        _showMessage(err.message);
+      }
+    }
+  }
+
+  Future<void> _refillLife() async {
+    if (GameData.instance.coins < 50) {
+      _showMessage('Need 50 coins to refill a life. Visit the store to get coins!');
+      return;
+    }
+
+    try {
+      final json = await ApiClient.instance.battleRefillLife(widget.code);
+      if (!mounted) return;
+      if (json['coins'] != null) {
+        GameData.instance.setCoins(json['coins'] as int);
+      } else {
+        await GameData.instance.spendCoins(50);
+      }
+      playSfx(Sfx.coin);
+      HapticFeedback.mediumImpact();
+      _showMessage('❤️ Life refilled (+1 life)!');
+      await _refresh();
+    } on ApiException catch (err) {
+      if (!mounted) return;
+      _showMessage(err.message);
+    }
+  }
+
+  void _showOutOfHints() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.lightbulb_rounded, color: AppColors.purple),
+            SizedBox(width: 10),
+            Text("You're out of hints"),
+          ],
+        ),
+        content: Text(
+          'Hints reveal clues, remove wrong options and nudge you toward the '
+          'right answer. You can buy 1 hint instantly for 150 coins, '
+          'earn one free by watching a short ad, or grab a pack from the store.\n\n'
+          'Coin balance: ${GameData.instance.coins} 🪙',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Not now'),
+          ),
+          if (GameData.instance.coins >= 150)
+            FilledButton.icon(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                final spent = await GameData.instance.spendCoins(150);
+                if (spent) {
+                  await GameData.instance.addHints(1);
+                  playSfx(Sfx.coin);
+                  _showMessage('Purchased 1 hint for 150 coins! 🎉');
+                }
+              },
+              icon: const Icon(Icons.stars_rounded, size: 17, color: Color(0xFFF5B82E)),
+              label: const Text('Buy 1 hint (150 🪙)'),
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+            ),
+          TextButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _earnHintViaAd();
+            },
+            icon: const Icon(Icons.play_circle_fill_rounded, size: 17),
+            label: const Text('Watch ad +1'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const StoreScreen()),
+              );
+            },
+            style: FilledButton.styleFrom(backgroundColor: AppColors.purple),
+            child: const Text('Store'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _earnHintViaAd() async {
+    final earned = await AdsService.instance.showRewarded(
+      onEarned: () {
+        // Grant is server-side and daily-capped.
+        GameData.instance.watchAdReward('hints');
+      },
+      onClosed: () {},
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text(
+          earned
+              ? 'Reward confirmed — your hint will land in a moment.'
+              : 'No ad available right now. Try again soon or visit the store.',
+        ),
+      ),
+    );
+  }
+
+  // Nudge helpers: first letter and length from the server hint payload.
+  String _firstLetter(Map<String, dynamic> round) {
+    if (_nudgeFirstLetter != null && _nudgeFirstLetter!.isNotEmpty) {
+      return _nudgeFirstLetter!;
+    }
+    return '?';
+  }
+
+  int _wordLength(Map<String, dynamic> round) {
+    if (_nudgeLength != null && _nudgeLength! > 0) {
+      return _nudgeLength!;
+    }
+    return (round['word'] as String? ?? '').length;
+  }
+
   Widget _buildTopBar(String label) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 20, 4),
@@ -383,6 +762,22 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
             ),
           ),
           const Spacer(),
+          TextButton.icon(
+            onPressed: _openHintSheet,
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.purple,
+              textStyle: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            icon: Badge(
+              isLabelVisible: GameData.instance.hints > 0,
+              label: Text('${GameData.instance.hints}'),
+              backgroundColor: AppColors.purple,
+              textStyle:
+                  const TextStyle(fontSize: 9, fontWeight: FontWeight.w800),
+              child: const Icon(Icons.lightbulb_outline_rounded, size: 20),
+            ),
+            label: const Text('Hint'),
+          ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
@@ -498,6 +893,35 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
           Row(
             children: [
               Expanded(child: _hearts(lives)),
+              if (isMe && lives == 1) ...[
+                InkWell(
+                  onTap: _refillLife,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.redAccent, width: 0.8),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add_rounded, size: 12, color: Colors.redAccent),
+                        Text(
+                          '+1 (50 🪙)',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.redAccent,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ],
               Text(
                 '$score',
                 style: const TextStyle(
@@ -530,7 +954,9 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
   }
 
   Widget _buildPictureCard(Map<String, dynamic> round) {
-    final hint = round['hint'] as String? ?? '';
+    final hint = _hintClueRevealed
+        ? round['hint'] as String? ?? ''
+        : ''; // clue costs a hint — hidden until purchased
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
@@ -562,6 +988,25 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
             round['picture'] as String? ?? '❓',
             style: const TextStyle(fontSize: 88, height: 1.1),
           ),
+          if (_hintNudgeUsed) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.palePurple,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                'Starts with "${_firstLetter(round)}" · '
+                '${_wordLength(round)} letters',
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.purple,
+                ),
+              ),
+            ),
+          ],
           if (hint.isNotEmpty) ...[
             const SizedBox(height: 14),
             Container(
@@ -600,7 +1045,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     final remaining = _remaining;
     final fraction = (remaining.inMilliseconds / total.inMilliseconds)
         .clamp(0.0, 1.0);
-    final urgent = remaining.inSeconds <= 10;
+    final urgent = remaining.inSeconds <= 5;
 
     return Column(
       children: [
@@ -933,7 +1378,15 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                       fontWeight: FontWeight.w900,
                     ),
                   ),
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: () {
+                    // Battle-end interstitial before returning to the arena.
+                    // Frequency-capped; pops immediately when no ad shows.
+                    AdsService.instance.showInterstitial(
+                      onDone: () {
+                        if (mounted) Navigator.of(context).pop();
+                      },
+                    );
+                  },
                   child: const Text('Back to Arena'),
                 ),
               ),

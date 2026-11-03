@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/ads_service.dart';
 import '../core/game_data.dart';
 import '../models/game_level.dart';
 import '../theme/app_theme.dart';
@@ -59,8 +60,11 @@ class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
       appBar: AppBar(
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(22),
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(22),
         children: [
           const Text(
             'Choose a level',
@@ -153,6 +157,10 @@ class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
               );
             },
           ),
+        ],
+      ),
+          ),
+          const BannerAdWidget(),
         ],
       ),
     );

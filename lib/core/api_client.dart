@@ -405,6 +405,9 @@ class ApiClient {
   Future<Map<String, dynamic>> dailyReward() =>
       _send('POST', '/store/daily-reward', authorized: true);
 
+  Future<Map<String, dynamic>> repairStreak() =>
+      _send('POST', '/store/repair-streak', authorized: true);
+
   Future<Map<String, dynamic>> achievements() =>
       _send('GET', '/achievements', authorized: true);
 
@@ -428,6 +431,18 @@ class ApiClient {
   Future<Map<String, dynamic>> answerBattle(String code, int roundNo, String choice) =>
       _send('POST', '/battles/rooms/$code/answer', authorized: true,
           body: {'roundNo': roundNo, 'choice': choice});
+
+  /// Spends 1 hint server-side and returns the hint payload
+  /// ({remove: 'Wrong'} or {firstLetter: 'L', length: 4}; clue returns {}).
+  Future<Map<String, dynamic>> battleHint(String code, int roundNo, String kind) =>
+      _send('POST', '/battles/rooms/$code/hint', authorized: true,
+          body: {'roundNo': roundNo, 'kind': kind});
+
+  Future<Map<String, dynamic>> battleRefillLife(String code) =>
+      _send('POST', '/battles/rooms/$code/refill-life', authorized: true);
+
+  Future<void> battleForfeit(String code) =>
+      _send('POST', '/battles/rooms/$code/forfeit', authorized: true);
 
   Future<void> cancelBattleRoom(String code) =>
       _send('DELETE', '/battles/rooms/$code', authorized: true);

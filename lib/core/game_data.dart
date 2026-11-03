@@ -449,6 +449,36 @@ class GameData extends ChangeNotifier {
     return true;
   }
 
+  /// Directly update hints balance (e.g. from server response).
+  void setHints(int newHints) {
+    hints = newHints;
+    _persist();
+    notifyListeners();
+  }
+
+  /// Directly update coins balance (e.g. from server response).
+  void setCoins(int newCoins) {
+    coins = newCoins;
+    _persist();
+    notifyListeners();
+  }
+
+  /// Directly update streak days.
+  void setStreak(int newStreak) {
+    streakDays = newStreak;
+    _persist();
+    notifyListeners();
+  }
+
+  /// Deducts coins locally and persists.
+  Future<bool> spendCoins(int amount) async {
+    if (coins < amount) return false;
+    coins -= amount;
+    await _persist();
+    notifyListeners();
+    return true;
+  }
+
   Future<void> setLastCategory(String category) async {
     if (lastCategory == category) return;
     lastCategory = category;

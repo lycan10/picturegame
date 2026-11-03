@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -56,6 +57,185 @@ class _MatchGameScreenState extends State<MatchGameScreen>
   // picture box. Young kids and users who struggle with dragging need this.
   String? selectedWordId;
 
+  // Countdown, battle-style: a per-item time budget that shrinks as the level
+  // number climbs, so higher levels are tighter on top of having more items.
+  static const int _baseSecondsPerItem = 12;
+  static const int _minSecondsPerItem = 7;
+  late int _timeLeft;
+  Timer? _countdown;
+  bool _timeUp = false;
+
+  int get _secondsPerItem =>
+      max(_minSecondsPerItem, _baseSecondsPerItem - (widget.levelNumber - 1));
+  int get _totalSeconds => _secondsPerItem * widget.level.items.length;
+
+  @override
+  void initState() {
+    super.initState();
+    GameData.instance.addListener(_onGameDataChanged);
+    shuffledWords = List<MatchItem>.from(widget.level.items)
+      ..shuffle(Random());
+    _startTimer();
+  }
+
+  @override
+  void dispose() {
+    GameData.instance.removeListener(_onGameDataChanged);
+    _countdown?.cancel();
+    super.dispose();
+  }
+
+  void _onGameDataChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _startTimer() {
+    _countdown?.cancel();
+    _timeUp = false;
+    _timeLeft = _totalSeconds;
+    _countdown = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || isComplete || _timeUp) {
+        timer.cancel();
+        return;
+      }
+      setState(() => _timeLeft = max(0, _timeLeft - 1));
+      if (_timeLeft == 0) _onTimeUp();
+    });
+  }
+
+  void _onTimeUp() {
+    _countdown?.cancel();
+    setState(() => _timeUp = true);
+    HapticFeedback.heavyImpact();
+    playSfx(Sfx.wrong);
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+        contentPadding: const EdgeInsets.all(24),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('⏱️', style: TextStyle(fontSize: 64)),
+            const SizedBox(height: 12),
+            const Text(
+              "Time's up!",
+              style: TextStyle(
+                color: AppColors.ink,
+                fontSize: 24,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'You matched ${matched.length} of ${widget.level.items.length}. Try again — faster!',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.black54, fontSize: 14),
+            ),
+            const SizedBox(height: 24),
+            if (GameData.instance.coins >= 100) ...[
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                  icon: const Icon(Icons.stars_rounded, color: Color(0xFFF5B82E)),
+                  label: const Text(
+                    '+15 Seconds (100 🪙)',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () async {
+                    Navigator.pop(dialogContext);
+                    final spent = await GameData.instance.spendCoins(100);
+                    if (spent) {
+                      playSfx(Sfx.coin);
+                      setState(() {
+                        _timeUp = false;
+                        _timeLeft += 15;
+                      });
+                      _startTimer();
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('+15 seconds added to your time! ⚡'),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.purple,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                  _restartLevel();
+                },
+                child: const Text(
+                  'Try again',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                  Navigator.pop(context);
+                },
+                child: const Text('Back to levels'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Fresh attempt at the same level after a timeout.
+  void _restartLevel() {
+    setState(() {
+      matched.clear();
+      placedWords.clear();
+      eliminatedForBox.clear();
+      revealedClueBoxId = null;
+      firstAttemptCorrect = 0;
+      attempts = 0;
+      hintsUsed = 0;
+      points = 0;
+      feedback = 'Drag each word to its matching picture.';
+      isSuccessFeedback = false;
+      isComplete = false;
+      completionReported = false;
+      hintTarget = null;
+      wrongTargetId = null;
+      selectedWordId = null;
+      shuffledWords = List<MatchItem>.from(widget.level.items)
+        ..shuffle(Random());
+    });
+    _startTimer();
+  }
+
   void _onTapWord(MatchItem word) {
     if (isComplete || matched.contains(word.id)) return;
     if (selectedWordId == word.id) {
@@ -78,13 +258,6 @@ class _MatchGameScreenState extends State<MatchGameScreen>
     final word = matches.first;
     setState(() => selectedWordId = null);
     _dropWord(word, target);
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    shuffledWords = List<MatchItem>.from(widget.level.items)
-      ..shuffle(Random());
   }
 
   void _dropWord(MatchItem word, MatchItem target) {
@@ -361,16 +534,37 @@ class _MatchGameScreenState extends State<MatchGameScreen>
             Text("You're out of hints"),
           ],
         ),
-        content: const Text(
+        content: Text(
           'Hints reveal clues, remove wrong options and nudge you toward the '
-          'right picture. Earn one free by watching a short ad, or grab a '
-          'pack from the store.',
+          'right picture. You can buy 1 hint instantly for 150 coins, '
+          'earn one free by watching a short ad, or grab a pack from the store.\n\n'
+          'Coin balance: ${GameData.instance.coins} 🪙',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Not now'),
           ),
+          if (GameData.instance.coins >= 150)
+            FilledButton.icon(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                final spent = await GameData.instance.spendCoins(150);
+                if (spent && mounted) {
+                  await GameData.instance.addHints(1);
+                  playSfx(Sfx.coin);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Purchased 1 hint for 150 coins! 🎉'),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+              },
+              icon: const Icon(Icons.stars_rounded, size: 17, color: Color(0xFFF5B82E)),
+              label: const Text('Buy 1 hint (150 🪙)'),
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+            ),
           TextButton.icon(
             onPressed: () {
               Navigator.pop(dialogContext);
@@ -390,7 +584,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
             style: FilledButton.styleFrom(
               backgroundColor: AppColors.purple,
             ),
-            child: const Text('Get hints'),
+            child: const Text('Store'),
           ),
         ],
       ),
@@ -420,6 +614,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
   void _finishLevel() {
     isComplete = true;
+    _countdown?.cancel();
     playSfx(Sfx.complete);
 
     final accuracy = attempts == 0 ? 0.0 : firstAttemptCorrect / attempts;
@@ -492,11 +687,17 @@ class _MatchGameScreenState extends State<MatchGameScreen>
                   ),
                   onPressed: () {
                     Navigator.pop(dialogContext);
-                    if (widget.onNext != null) {
-                      widget.onNext!();
-                    } else {
-                      Navigator.pop(context);
-                    }
+                    // Level-finish interstitial: shown after the celebration
+                    // dialog closes, before moving on. Frequency-capped, and a
+                    // no-op (navigation proceeds) when no ad is ready.
+                    AdsService.instance.showInterstitial(onDone: () {
+                      if (!mounted) return;
+                      if (widget.onNext != null) {
+                        widget.onNext!();
+                      } else {
+                        Navigator.pop(context);
+                      }
+                    });
                   },
                   child: Text(
                     widget.onNext == null ? 'Finish Level' : 'Next Level ➔',
@@ -514,7 +715,57 @@ class _MatchGameScreenState extends State<MatchGameScreen>
     });
   }
 
-/// One picture box: accepts drops AND taps (tap-to-select flow).
+  /// Countdown bar, mirroring the battle screen's timer UI.
+  Widget _buildTimerBar() {
+    final fraction = _totalSeconds == 0
+        ? 0.0
+        : (_timeLeft / _totalSeconds).clamp(0.0, 1.0);
+    final urgent = _timeLeft <= 10;
+
+    return Column(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: TweenAnimationBuilder<double>(
+            duration: const Duration(milliseconds: 400),
+            tween: Tween(end: fraction),
+            builder: (context, value, _) => LinearProgressIndicator(
+              value: value,
+              minHeight: 9,
+              backgroundColor: AppColors.palePurple,
+              valueColor: AlwaysStoppedAnimation(
+                urgent ? Colors.redAccent : AppColors.purple,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              '${_secondsPerItem}s per item',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Colors.black38,
+              ),
+            ),
+            Text(
+              _timeUp ? "Time's up!" : '${_timeLeft}s left',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: urgent || _timeUp ? Colors.redAccent : Colors.grey,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// One picture box: accepts drops AND taps (tap-to-select flow).
   Widget _pictureBox(MatchItem item) {
     final isMatched = matched.contains(item.id);
     final isHinted = hintTarget == item.id;
@@ -624,11 +875,44 @@ class _MatchGameScreenState extends State<MatchGameScreen>
     );
   }
 
+  // Quitting mid-level asks first; a confirmed exit is followed by a
+  // frequency-capped interstitial (no-op when nothing is ready).
+  Future<void> _confirmQuit() async {
+    final quit = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text('Leave this level?'),
+        content: const Text('Your progress in this level will be lost.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Keep playing'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.purple),
+            child: const Text('Quit'),
+          ),
+        ],
+      ),
+    );
+    if (quit != true || !mounted) return;
+    Navigator.pop(context);
+    AdsService.instance.showInterstitial();
+  }
+
   @override
   Widget build(BuildContext context) {
     final items = widget.level.items;
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || isComplete) return;
+        _confirmQuit();
+      },
+      child: Scaffold(
       backgroundColor: const Color(0xFFF7F6FC),
       appBar: AppBar(
         backgroundColor: Colors.white,
@@ -719,6 +1003,8 @@ class _MatchGameScreenState extends State<MatchGameScreen>
                       ),
                     ],
                   ),
+                  const SizedBox(height: 10),
+                  _buildTimerBar(),
                 ],
               ),
             ),
@@ -887,8 +1173,11 @@ class _MatchGameScreenState extends State<MatchGameScreen>
                 ],
               ),
             ),
+
+            const BannerAdWidget(),
           ],
         ),
+      ),
       ),
     );
   }

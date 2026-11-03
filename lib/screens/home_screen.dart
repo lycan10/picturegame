@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:picture_match/core/ads_service.dart';
+import 'package:picture_match/core/api_client.dart';
 import 'package:picture_match/core/game_data.dart';
+import 'package:picture_match/core/sound_service.dart';
 import 'package:picture_match/screens/achievement_screen.dart';
 import 'package:picture_match/screens/battle_screen.dart';
 import 'package:picture_match/screens/leadership_screen.dart';
@@ -26,6 +29,11 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     game.addListener(_onGameDataChanged);
+    // App-open interstitial (every 3rd launch, frequency-capped) — once the
+    // home screen is up so the ad never lands on a blank frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      AdsService.instance.maybeShowAppOpenInterstitial();
+    });
   }
 
   @override
@@ -105,6 +113,103 @@ class _HomeScreenState extends State<HomeScreen> {
         PageTransitions.slideFromRight(const AchievementsScreen()),
       );
 
+  void _showStreakDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogCtx) {
+        final streak = game.streakDays;
+        final coins = game.coins;
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: const Row(
+            children: [
+              Icon(Icons.local_fire_department_rounded, color: Color(0xFFFF8A3D), size: 28),
+              SizedBox(width: 8),
+              Text('Streak Saver', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Current Streak: $streak day${streak == 1 ? '' : 's'} 🔥',
+                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Did you miss a day or want to protect and extend your streak? You can repair your streak for 300 coins.',
+                style: TextStyle(fontSize: 14, color: Color(0xFF6B7280), height: 1.4),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  const Icon(Icons.stars_rounded, size: 20, color: Color(0xFFF5B82E)),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Your balance: $coins coins',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: const Text('Close'),
+            ),
+            FilledButton.icon(
+              onPressed: () async {
+                if (coins < 300) {
+                  Navigator.pop(dialogCtx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: const Text('You need at least 300 coins to repair your streak.'),
+                      action: SnackBarAction(
+                        label: 'Get Coins',
+                        onPressed: _openStore,
+                      ),
+                    ),
+                  );
+                  return;
+                }
+                Navigator.pop(dialogCtx);
+                try {
+                  final res = await ApiClient.instance.repairStreak();
+                  if (!mounted) return;
+                  if (res['streakDays'] != null) {
+                    game.setStreak(res['streakDays'] as int);
+                  }
+                  if (res['coins'] != null) {
+                    game.setCoins(res['coins'] as int);
+                  }
+                  playSfx(Sfx.coin);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Streak repaired to ${res['streakDays'] ?? (streak + 1)} days! 🔥'),
+                      backgroundColor: const Color(0xFF10B981),
+                    ),
+                  );
+                } on ApiException catch (e) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(e.message)),
+                  );
+                }
+              },
+              icon: const Icon(Icons.shield_rounded, size: 18),
+              label: const Text('Repair (300 🪙)'),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFFF8A3D),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   // ---- Build ------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
@@ -117,7 +222,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Scaffold(
       backgroundColor: const Color(0xFFF7F6FC),
-      body: IndexedStack(index: selectedIndex, children: pages),
+      body: Column(
+        children: [
+          Expanded(child: IndexedStack(index: selectedIndex, children: pages)),
+          // Anchored banner on the home tab only — gameplay and real-time
+          // battle tabs stay ad-free to avoid stealing interaction.
+          if (selectedIndex == 0) const BannerAdWidget(),
+        ],
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: selectedIndex,
         backgroundColor: Colors.white,
@@ -208,7 +320,8 @@ class _HomeScreenState extends State<HomeScreen> {
           icon: Icons.local_fire_department_rounded,
           iconColor: const Color(0xFFFF8A3D),
           label: '${game.streakDays}',
-          semanticLabel: '${game.streakDays} day streak',
+          semanticLabel: '${game.streakDays} day streak. Tap to repair streak',
+          onTap: _showStreakDialog,
         ),
         const SizedBox(width: 10),
         _StatChip(

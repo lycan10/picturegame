@@ -8,6 +8,7 @@ import '../core/game_data.dart';
 import '../core/login_gate.dart';
 import '../theme/app_theme.dart';
 import 'battle_game_screen.dart';
+import 'store_screen.dart';
 
 /// Battle Arena lobby: start a friend room, join one by code, or quick-match.
 /// Once a room goes active, this screen hands over to [BattleGameScreen].
@@ -30,15 +31,72 @@ class _BattleScreenState extends State<BattleScreen> {
   bool _inviteDialogOpen = false;
 
   @override
+  void initState() {
+    super.initState();
+    GameData.instance.addListener(_onGameDataChanged);
+  }
+
+  @override
   void dispose() {
+    GameData.instance.removeListener(_onGameDataChanged);
     _pollTimer?.cancel();
     super.dispose();
+  }
+
+  void _onGameDataChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _showNeedCoinsDialog({required int needed, required String modeName}) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.stars_rounded, color: Color(0xFFF5B82E), size: 28),
+            SizedBox(width: 10),
+            Text('More Coins Needed'),
+          ],
+        ),
+        content: Text(
+          '$modeName costs $needed coins to enter. '
+          'You currently have ${GameData.instance.coins} coins.\n\n'
+          'Visit the store to get coins or complete game levels to earn more!',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const StoreScreen()),
+              );
+            },
+            icon: const Icon(Icons.shopping_bag_rounded, size: 18),
+            label: const Text('Get Coins'),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.purple),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _createRoom() async {
     // Battles need an account (opponent identity, ranking, results).
     if (!await ensureSignedIn(context)) return;
     if (!mounted) return;
+
+    if (GameData.instance.coins < 1000) {
+      _showNeedCoinsDialog(needed: 1000, modeName: 'Challenge a Friend');
+      return;
+    }
+
     final ticket = ++_actionTicket;
 
     String code;
@@ -47,9 +105,13 @@ class _BattleScreenState extends State<BattleScreen> {
       code = json['code'] as String;
     } on ApiException catch (err) {
       if (!mounted || ticket != _actionTicket) return;
-      _showMessage(err.isNetworkError
-          ? "You're offline — battles need an internet connection."
-          : err.message);
+      if (err.message.contains('Not enough coins')) {
+        _showNeedCoinsDialog(needed: 1000, modeName: 'Challenge a Friend');
+      } else {
+        _showMessage(err.isNetworkError
+            ? "You're offline — battles need an internet connection."
+            : err.message);
+      }
       return;
     }
 
@@ -67,6 +129,12 @@ class _BattleScreenState extends State<BattleScreen> {
     // Battles need an account (opponent identity, ranking, results).
     if (!await ensureSignedIn(context)) return;
     if (!mounted) return;
+
+    if (GameData.instance.coins < 500) {
+      _showNeedCoinsDialog(needed: 500, modeName: 'Quick Match');
+      return;
+    }
+
     final ticket = ++_actionTicket;
 
     _showSearchingDialog();
@@ -77,9 +145,13 @@ class _BattleScreenState extends State<BattleScreen> {
     } on ApiException catch (err) {
       if (!mounted || ticket != _actionTicket) return;
       _closeSearchDialog();
-      _showMessage(err.isNetworkError
-          ? 'Quick match needs an internet connection.'
-          : err.message);
+      if (err.message.contains('Not enough coins')) {
+        _showNeedCoinsDialog(needed: 500, modeName: 'Quick Match');
+      } else {
+        _showMessage(err.isNetworkError
+            ? 'Quick match needs an internet connection.'
+            : err.message);
+      }
       return;
     }
 
@@ -87,8 +159,9 @@ class _BattleScreenState extends State<BattleScreen> {
     final code = json['code'] as String;
     final status = json['status'] as String?;
 
-    // Someone was already waiting — the join happened server-side.
+    // Someone was already waiting — the join happened server-side and deducted coins.
     if (status == 'active') {
+      await GameData.instance.spendCoins(500);
       await _enterBattle(code);
       return;
     }
@@ -221,12 +294,21 @@ class _BattleScreenState extends State<BattleScreen> {
         setError('That room is no longer available');
         return;
       }
+      await GameData.instance.spendCoins(1000);
+      if (!dialogContext.mounted) return;
       Navigator.pop(dialogContext);
       await _enterBattle(code);
     } on ApiException catch (err) {
       if (!dialogContext.mounted) return;
       setJoining(false);
-      setError(err.isNetworkError ? 'No connection — try again' : err.message);
+      if (err.message.contains('Not enough coins')) {
+        Navigator.pop(dialogContext);
+        if (mounted) {
+          _showNeedCoinsDialog(needed: 1000, modeName: 'Join Battle');
+        }
+      } else {
+        setError(err.isNetworkError ? 'No connection — try again' : err.message);
+      }
     }
   }
 
@@ -267,6 +349,8 @@ class _BattleScreenState extends State<BattleScreen> {
         if (!mounted || status == null) return;
         if (status == 'active') {
           timer.cancel();
+          final isQuick = _searchDialogOpen;
+          await GameData.instance.spendCoins(isQuick ? 500 : 1000);
           await _enterBattle(code);
         } else if (status == 'expired') {
           timer.cancel();
@@ -515,23 +599,23 @@ class _BattleScreenState extends State<BattleScreen> {
               _buildBattleOption(
                 icon: Icons.people_alt_rounded,
                 title: 'Challenge a Friend',
-                subtitle: 'Invite a friend to a private battle',
-                tag: '1 VS 1',
+                subtitle: 'Invite a friend to a private battle (1,000 coins)',
+                tag: '1,000 🪙',
                 onTap: _createRoom,
               ),
               const SizedBox(height: 12),
               _buildBattleOption(
                 icon: Icons.bolt_rounded,
                 title: 'Quick Match',
-                subtitle: 'Find an opponent and start playing',
-                tag: 'LIVE',
+                subtitle: 'Find an opponent and start playing (500 coins)',
+                tag: '500 🪙',
                 onTap: _quickMatch,
               ),
               const SizedBox(height: 12),
               _buildBattleOption(
                 icon: Icons.keyboard_alt_outlined,
                 title: 'Enter Battle Code',
-                subtitle: 'Got a code from a friend? Jump in',
+                subtitle: 'Got a code from a friend? Jump in (Free)',
                 tag: 'JOIN',
                 onTap: _joinByCode,
               ),
@@ -593,8 +677,37 @@ class _BattleScreenState extends State<BattleScreen> {
         ),
         Container(
           padding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 8,
+            horizontal: 10,
+            vertical: 7,
+          ),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF5B82E).withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(30),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.stars_rounded,
+                color: Color(0xFFF5B82E),
+                size: 16,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                '${GameData.instance.coins}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.ink,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 7,
           ),
           decoration: BoxDecoration(
             color: Colors.red.withValues(alpha: 0.08),
@@ -607,7 +720,7 @@ class _BattleScreenState extends State<BattleScreen> {
                 color: Colors.redAccent,
                 size: 16,
               ),
-              SizedBox(width: 5),
+              SizedBox(width: 4),
               Text(
                 '3 Lives',
                 style: TextStyle(

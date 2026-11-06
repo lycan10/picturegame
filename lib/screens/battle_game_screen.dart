@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../core/ads_service.dart';
 import '../core/api_client.dart';
+import '../core/formatters.dart';
 import '../core/game_data.dart';
 import '../core/sound_service.dart';
 import '../theme/app_theme.dart';
@@ -87,6 +88,8 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
 
   @override
   void initState() {
+    // An app-open ad firing on resume mid-battle would be brutal — suppress.
+    AdsService.instance.suppressAppOpen = true;
     super.initState();
     GameData.instance.addListener(_onGameDataChanged);
     _refresh();
@@ -104,6 +107,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
 
   @override
   void dispose() {
+    AdsService.instance.suppressAppOpen = false;
     GameData.instance.removeListener(_onGameDataChanged);
     _pollTimer?.cancel();
     _tickTimer?.cancel();
@@ -159,7 +163,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
       if (fromAnswer && round != null) {
         final my = (round['myAnswerCorrect'] as num?)?.toInt();
         if (my == 1) {
-          _feedback = '✨ Correct! +100 points';
+          _feedback = '✨ Correct! +${formatCount(GameData.instance.battleAnswerPoints)} points';
           _feedbackGood = true;
           HapticFeedback.mediumImpact();
         } else if (my == 0) {
@@ -616,8 +620,9 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
   }
 
   Future<void> _refillLife() async {
-    if (GameData.instance.coins < 50) {
-      _showMessage('Need 50 coins to refill a life. Visit the store to get coins!');
+    final refillCost = GameData.instance.battleLifeRefillCost;
+    if (GameData.instance.coins < refillCost) {
+      _showMessage('Need $refillCost coins to refill a life. Visit the store to get coins!');
       return;
     }
 
@@ -627,7 +632,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
       if (json['coins'] != null) {
         GameData.instance.setCoins(json['coins'] as int);
       } else {
-        await GameData.instance.spendCoins(50);
+        await GameData.instance.spendCoins(refillCost);
       }
       playSfx(Sfx.coin);
       HapticFeedback.mediumImpact();
@@ -653,28 +658,31 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
         ),
         content: Text(
           'Hints reveal clues, remove wrong options and nudge you toward the '
-          'right answer. You can buy 1 hint instantly for 150 coins, '
+          'right answer. You can buy 1 hint instantly for '
+          '${GameData.instance.hintPriceCoins} coins, '
           'earn one free by watching a short ad, or grab a pack from the store.\n\n'
-          'Coin balance: ${GameData.instance.coins} 🪙',
+          'Coin balance: ${formatCount(GameData.instance.coins)} 🪙',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Not now'),
           ),
-          if (GameData.instance.coins >= 150)
+          if (GameData.instance.coins >= GameData.instance.hintPriceCoins)
             FilledButton.icon(
               onPressed: () async {
                 Navigator.pop(dialogContext);
-                final spent = await GameData.instance.spendCoins(150);
+                final spent = await GameData.instance
+                    .spendCoins(GameData.instance.hintPriceCoins);
                 if (spent) {
                   await GameData.instance.addHints(1);
                   playSfx(Sfx.coin);
-                  _showMessage('Purchased 1 hint for 150 coins! 🎉');
+                  _showMessage(
+                      'Purchased 1 hint for ${GameData.instance.hintPriceCoins} coins! 🎉');
                 }
               },
               icon: const Icon(Icons.stars_rounded, size: 17, color: Color(0xFFF5B82E)),
-              label: const Text('Buy 1 hint (150 🪙)'),
+              label: Text('Buy 1 hint (${formatCount(GameData.instance.hintPriceCoins)} 🪙)'),
               style: FilledButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
             ),
           TextButton.icon(
@@ -904,12 +912,12 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: Colors.redAccent, width: 0.8),
                     ),
-                    child: const Row(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.add_rounded, size: 12, color: Colors.redAccent),
+                        const Icon(Icons.add_rounded, size: 12, color: Colors.redAccent),
                         Text(
-                          '+1 (50 🪙)',
+                          '+1 (${formatCount(GameData.instance.battleLifeRefillCost)} 🪙)',
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.bold,
@@ -923,7 +931,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                 const SizedBox(width: 6),
               ],
               Text(
-                '$score',
+                formatCount(score),
                 style: const TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w900,
@@ -1047,35 +1055,49 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
         .clamp(0.0, 1.0);
     final urgent = remaining.inSeconds <= 5;
 
-    return Column(
-      children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: TweenAnimationBuilder<double>(
-            duration: const Duration(milliseconds: 400),
-            tween: Tween(end: fraction),
-            builder: (context, value, _) => LinearProgressIndicator(
-              value: value,
-              minHeight: 9,
-              backgroundColor: AppColors.palePurple,
-              valueColor: AlwaysStoppedAnimation(
-                urgent ? Colors.redAccent : AppColors.purple,
-              ),
+    return TweenAnimationBuilder<double>(
+      duration: const Duration(milliseconds: 400),
+      tween: Tween(end: fraction),
+      builder: (context, value, _) => Row(
+        children: [
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CircularProgressIndicator(
+                  value: value,
+                  strokeWidth: 3.5,
+                  backgroundColor: AppColors.palePurple,
+                  valueColor: AlwaysStoppedAnimation(
+                    urgent ? Colors.redAccent : AppColors.purple,
+                  ),
+                ),
+                Text(
+                  remaining > Duration.zero
+                      ? '${remaining.inSeconds}'
+                      : '!',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: urgent ? Colors.redAccent : AppColors.ink,
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          remaining > Duration.zero
-              ? '${remaining.inSeconds}s'
-              : "Time's up!",
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w800,
-            color: urgent ? Colors.redAccent : Colors.grey,
+          const SizedBox(width: 8),
+          Text(
+            remaining > Duration.zero ? 'Time left' : "Time's up!",
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: urgent ? Colors.redAccent : Colors.grey,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -1274,10 +1296,75 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
   // Result screen
   // =========================================================================
 
+  // Post-battle "add friend" (quick match discovery). Loaded lazily when the
+  // result screen shows.
+  String? _friendStatus; // none | friends | incoming | outgoing
+  bool _addingFriend = false;
+
+  String? get _opponentId {
+    final opp = _opponent;
+    return opp?['userId'] as String?;
+  }
+
+  Future<void> _loadFriendStatus() async {
+    final oppId = _opponentId;
+    if (oppId == null || _friendStatus != null) return;
+    try {
+      final json = await ApiClient.instance.friendStatus(oppId);
+      if (!mounted) return;
+      setState(() => _friendStatus = json['status'] as String?);
+    } on ApiException {
+      // Offline — the button simply won't show.
+    }
+  }
+
+  Future<void> _addOpponentAsFriend() async {
+    final oppId = _opponentId;
+    if (oppId == null || _addingFriend) return;
+    setState(() => _addingFriend = true);
+    try {
+      final json = await ApiClient.instance.sendFriendRequest(oppId);
+      final result = json['result'] as String? ?? 'sent';
+      if (!mounted) return;
+      playSfx(Sfx.success);
+      setState(() {
+        _friendStatus = switch (result) {
+          'auto-accepted' => 'friends',
+          'already-friends' => 'friends',
+          _ => 'outgoing',
+        };
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(switch (result) {
+            'auto-accepted' => 'You are now friends! 🎉',
+            'already-friends' => 'You are already friends.',
+            _ => 'Friend request sent!',
+          }),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on ApiException catch (err) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(err.isNetworkError ? 'You are offline.' : err.message),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _addingFriend = false);
+    }
+  }
+
   Widget _buildFinished() {
     final winnerId = _state?['winnerId'] as String?;
     final isDraw = winnerId == null;
     final isWin = !isDraw && winnerId == _myId;
+    // Load the friendship status once for the result screen.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _friendStatus == null) _loadFriendStatus();
+    });
 
     final headline = isDraw ? "It's a draw!" : isWin ? 'Victory!' : 'Defeated';
     final emoji = isDraw ? '🤝' : isWin ? '🏆' : '💔';
@@ -1317,7 +1404,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
           const SizedBox(height: 8),
             Text(
               isWin
-                  ? '+200 bonus points · +50 coins'
+                  ? '+${formatCount(GameData.instance.battleWinnerBonusPoints)} bonus points · +${formatCount(GameData.instance.battleWinnerCoins)} coins'
                   : isDraw
                       ? 'Both players ran out of hearts'
                       : 'Better luck next battle!',
@@ -1356,6 +1443,32 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                       lives: (opp?['lives'] as num?)?.toInt() ?? 0,
                       highlight: !isWin && !isDraw,
                     ),
+                    if (!isDraw &&
+                        _friendStatus == 'none' &&
+                        _opponentId != null) ...[
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: _addingFriend ? null : _addOpponentAsFriend,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.white24,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                          ),
+                          icon: _addingFriend
+                              ? const SizedBox(
+                                  width: 15,
+                                  height: 15,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.person_add_rounded, size: 17),
+                          label: Text('Add ${opp?['name'] ?? 'opponent'} as friend',
+                              style: const TextStyle(
+                                  fontSize: 13, fontWeight: FontWeight.w800)),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1428,7 +1541,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
             ),
         ),
         Text(
-          '$score pts',
+          '${formatCount(score)} pts',
           style: const TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w700,

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
@@ -5,6 +7,7 @@ import '../core/api_client.dart';
 import '../core/app_config.dart';
 import '../core/game_data.dart';
 import '../core/login_gate.dart';
+import '../core/formatters.dart';
 import '../theme/app_theme.dart';
 
 class LeaderboardScreen extends StatefulWidget {
@@ -39,10 +42,23 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     _load();
   }
 
+  Set<String> _friendIds = {};
+
   Future<void> _load() async {
     if (!GameData.instance.isLoggedIn) return;
     setState(() => loading = true);
     try {
+      // Friend ids in parallel so rows can offer "add friend" (discovery).
+      unawaited(ApiClient.instance.friends().then((json) {
+        if (!mounted) return;
+        setState(() {
+          _friendIds = ((json['friends'] as List? ?? [])
+                  .whereType<Map>()
+                  .map((f) => f['userId'] as String?))
+              .whereType<String>()
+              .toSet();
+        });
+      }).catchError((Object _) {}));
       final json = await ApiClient.instance.leaderboard(_periods[selectedTab]);
       final entries = (json['entries'] as List)
           .map((e) => {
@@ -52,6 +68,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 'emoji': e['avatar'] as String,
                 'photo': e['avatarUrl'] as String?,
                 'isMe': e['isMe'] as bool? ?? false,
+                'userId': e['userId'] as String?,
               })
           .toList();
       if (mounted) {
@@ -66,6 +83,40 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       if (mounted) setState(() => offline = true);
     } finally {
       if (mounted) setState(() => loading = false);
+    }
+  }
+
+  /// Discovery: add a player from the leaderboard as a friend.
+  Future<void> _addFriend(Map<String, dynamic> player) async {
+    final userId = player['userId'] as String?;
+    if (userId == null) return;
+    try {
+      final json = await ApiClient.instance.sendFriendRequest(userId);
+      final result = json['result'] as String? ?? 'sent';
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(switch (result) {
+            'auto-accepted' => 'You are now friends with ${player['name']}! 🎉',
+            'already-friends' => 'Already friends with ${player['name']}.',
+            _ => 'Friend request sent to ${player['name']}!',
+          }),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      if (result == 'auto-accepted') {
+        setState(() => _friendIds.add(userId));
+      } else {
+        setState(() => _friendIds.add(userId)); // pending — hide the button
+      }
+    } on ApiException catch (err) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(err.isNetworkError ? 'You are offline.' : err.message),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -694,6 +745,18 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               ],
             ),
           ),
+          const Spacer(),
+          // Discovery: offer "add friend" for players we're not connected to.
+          if (!isMe &&
+              (player['userId'] as String?) != null &&
+              !_friendIds.contains(player['userId']) &&
+              GameData.instance.isLoggedIn)
+            IconButton(
+              tooltip: 'Add friend',
+              icon: Icon(Icons.person_add_rounded,
+                  size: 20, color: Colors.grey.shade600),
+              onPressed: () => _addFriend(player),
+            ),
           const SizedBox(width: 8),
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -723,10 +786,5 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     );
   }
 
-  String _formatScore(int score) {
-    return score.toString().replaceAllMapped(
-          RegExp(r'(\d)(?=(\d{3})+$)'),
-          (match) => '${match[1]},',
-        );
-  }
+  String _formatScore(int score) => formatCount(score);
 }

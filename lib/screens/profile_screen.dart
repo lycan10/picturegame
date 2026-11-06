@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../core/game_data.dart';
+import '../core/formatters.dart';
 import '../theme/app_theme.dart';
 import 'achievement_screen.dart';
 import 'change_password_screen.dart';
@@ -11,6 +12,8 @@ import 'edit_profile_screen.dart';
 import 'help_support_screen.dart';
 import 'login_screen.dart';
 import 'notification_settings_screen.dart';
+import 'friends_screen.dart';
+import 'payout_details_screen.dart';
 import 'privacy_security_screen.dart';
 import 'sound_settings_screen.dart';
 
@@ -557,12 +560,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  String _formatNumber(int number) {
-    return number.toString().replaceAllMapped(
-          RegExp(r'(\d)(?=(\d{3})+$)'),
-          (match) => '${match[1]},',
-        );
-  }
+  String _formatNumber(int number) => formatCount(number);
 
   int _completedLevelsCached() {
     var count = 0;
@@ -817,6 +815,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
             onTap: () => Navigator.push<void>(
               context,
               MaterialPageRoute(builder: (_) => const SoundSettingsScreen()),
+            ),
+          ),
+          _divider(),
+          _accountTile(
+            icon: Icons.people_alt_rounded,
+            title: 'Friends',
+            subtitle: 'Add friends, answer requests, battle together',
+            onTap: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute(builder: (_) => const FriendsScreen()),
+            ),
+          ),
+          _divider(),
+          _accountTile(
+            icon: Icons.account_balance_rounded,
+            title: 'Payout details',
+            subtitle: 'Where your contest cash prizes are sent',
+            onTap: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute(builder: (_) => const PayoutDetailsScreen()),
             ),
           ),
           _divider(),

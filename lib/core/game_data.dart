@@ -5,9 +5,10 @@ import 'package:flutter/foundation.dart';
 
 import '../data/game_levels.dart';
 import '../models/game_level.dart';
-import '../models/match_item.dart';
 import 'api_client.dart';
+import 'notification_service.dart';
 import 'app_config.dart';
+import 'content_manifest.dart';
 import 'local_store.dart';
 
 /// Client-side mirror of the server's achievement catalog (same ids/targets).
@@ -18,6 +19,7 @@ class AchievementDef {
   final String category;
   final int target;
   final int points;
+  final int coins;
   final bool isSpecial;
   final int progress;
   final bool unlocked;
@@ -30,6 +32,7 @@ class AchievementDef {
     required this.category,
     required this.target,
     required this.points,
+    this.coins = 0,
     this.isSpecial = false,
     this.progress = 0,
     this.unlocked = false,
@@ -43,6 +46,7 @@ class AchievementDef {
         category: json['category'] as String,
         target: json['target'] as int,
         points: json['points'] as int,
+        coins: json['coins'] as int? ?? 0,
         isSpecial: json['isSpecial'] as bool? ?? false,
         progress: json['progress'] as int? ?? 0,
         unlocked: json['unlocked'] as bool? ?? false,
@@ -56,6 +60,7 @@ class AchievementDef {
         'category': category,
         'target': target,
         'points': points,
+        'coins': coins,
         'isSpecial': isSpecial,
         'progress': progress,
         'unlocked': unlocked,
@@ -64,27 +69,27 @@ class AchievementDef {
 }
 
 const List<AchievementDef> kAchievementDefaults = [
-  AchievementDef(id: 'first_login', title: 'Welcome Back', description: 'Log in for the first time.', category: 'daily', target: 1, points: 50),
-  AchievementDef(id: 'three_day_streak', title: 'Getting Consistent', description: 'Log in for 3 consecutive days.', category: 'daily', target: 3, points: 100),
-  AchievementDef(id: 'seven_day_streak', title: 'Week Warrior', description: 'Maintain a 7-day login streak.', category: 'daily', target: 7, points: 250),
-  AchievementDef(id: 'thirty_day_streak', title: 'Unstoppable', description: 'Log in for 30 consecutive days.', category: 'daily', target: 30, points: 1000, isSpecial: true),
-  AchievementDef(id: 'first_battle', title: 'Into the Arena', description: 'Complete your first battle.', category: 'battle', target: 1, points: 100),
-  AchievementDef(id: 'five_wins', title: 'Rising Champion', description: 'Win 5 battles.', category: 'battle', target: 5, points: 250),
-  AchievementDef(id: 'twenty_five_wins', title: 'Battle Legend', description: 'Win 25 battles.', category: 'battle', target: 25, points: 750, isSpecial: true),
-  AchievementDef(id: 'ten_win_streak', title: 'Win Streak', description: 'Win 10 battles in a row.', category: 'battle', target: 10, points: 500),
-  AchievementDef(id: 'comeback', title: 'The Comeback', description: 'Win a battle with only one heart remaining.', category: 'battle', target: 1, points: 300),
-  AchievementDef(id: 'perfect_battle', title: 'Untouchable', description: 'Win a battle without losing a heart.', category: 'battle', target: 1, points: 350),
-  AchievementDef(id: 'first_perfect', title: 'Sharp Mind', description: 'Answer 10 questions correctly in a row.', category: 'skill', target: 10, points: 200),
-  AchievementDef(id: 'speedster', title: 'Speedster', description: 'Answer 10 questions within 3 seconds each.', category: 'skill', target: 10, points: 250),
-  AchievementDef(id: 'hundred_correct', title: 'Word Wizard', description: 'Match 100 pictures correctly.', category: 'skill', target: 100, points: 400),
-  AchievementDef(id: 'flawless_round', title: 'Perfect Round', description: 'Complete 20 matches without a mistake.', category: 'skill', target: 20, points: 500),
-  AchievementDef(id: 'first_hundred', title: 'Point Collector', description: 'Earn your first 100 points.', category: 'progress', target: 100, points: 50),
-  AchievementDef(id: 'five_thousand', title: 'High Scorer', description: 'Earn 5,000 total points.', category: 'progress', target: 5000, points: 300),
-  AchievementDef(id: 'animal_expert', title: 'Animal Expert', description: 'Correctly identify 50 animals.', category: 'progress', target: 50, points: 200),
-  AchievementDef(id: 'flag_master', title: 'Flag Master', description: 'Correctly identify 50 country flags.', category: 'progress', target: 50, points: 200),
-  AchievementDef(id: 'comeback_kid', title: 'Never Give Up', description: 'Return to the game after a 7-day absence.', category: 'special', target: 1, points: 150, isSpecial: true),
-  AchievementDef(id: 'all_rounder', title: 'All-Rounder', description: 'Earn an achievement in every category.', category: 'special', target: 5, points: 600, isSpecial: true),
-  AchievementDef(id: 'early_bird', title: 'Early Bird', description: 'Complete a match before 8 AM.', category: 'special', target: 1, points: 100, isSpecial: true),
+  AchievementDef(id: 'first_login', title: 'Welcome Back', description: 'Log in for the first time.', category: 'daily', target: 1, points: 50, coins: 1000),
+  AchievementDef(id: 'three_day_streak', title: 'Getting Consistent', description: 'Log in for 3 consecutive days.', category: 'daily', target: 3, points: 100, coins: 1000),
+  AchievementDef(id: 'seven_day_streak', title: 'Week Warrior', description: 'Maintain a 7-day login streak.', category: 'daily', target: 7, points: 250, coins: 1000),
+  AchievementDef(id: 'thirty_day_streak', title: 'Unstoppable', description: 'Log in for 30 consecutive days.', category: 'daily', target: 30, points: 1000, coins: 2000, isSpecial: true),
+  AchievementDef(id: 'first_battle', title: 'Into the Arena', description: 'Complete your first battle.', category: 'battle', target: 1, points: 100, coins: 1000),
+  AchievementDef(id: 'five_wins', title: 'Rising Champion', description: 'Win 5 battles.', category: 'battle', target: 5, points: 250, coins: 1000),
+  AchievementDef(id: 'twenty_five_wins', title: 'Battle Legend', description: 'Win 25 battles.', category: 'battle', target: 25, points: 750, coins: 2000, isSpecial: true),
+  AchievementDef(id: 'ten_win_streak', title: 'Win Streak', description: 'Win 10 battles in a row.', category: 'battle', target: 10, points: 500, coins: 1500),
+  AchievementDef(id: 'comeback', title: 'The Comeback', description: 'Win a battle with only one heart remaining.', category: 'battle', target: 1, points: 300, coins: 1000),
+  AchievementDef(id: 'perfect_battle', title: 'Untouchable', description: 'Win a battle without losing a heart.', category: 'battle', target: 1, points: 350, coins: 1000),
+  AchievementDef(id: 'first_perfect', title: 'Sharp Mind', description: 'Answer 10 questions correctly in a row.', category: 'skill', target: 10, points: 200, coins: 1000),
+  AchievementDef(id: 'speedster', title: 'Speedster', description: 'Answer 10 questions within 3 seconds each.', category: 'skill', target: 10, points: 250, coins: 1000),
+  AchievementDef(id: 'hundred_correct', title: 'Word Wizard', description: 'Match 100 pictures correctly.', category: 'skill', target: 100, points: 400, coins: 1500),
+  AchievementDef(id: 'flawless_round', title: 'Perfect Round', description: 'Complete 20 matches without a mistake.', category: 'skill', target: 20, points: 500, coins: 1500),
+  AchievementDef(id: 'first_hundred', title: 'Point Collector', description: 'Earn your first 100 points.', category: 'progress', target: 100, points: 50, coins: 1000),
+  AchievementDef(id: 'five_thousand', title: 'High Scorer', description: 'Earn 5,000 total points.', category: 'progress', target: 5000, points: 300, coins: 1000),
+  AchievementDef(id: 'animal_expert', title: 'Animal Expert', description: 'Correctly identify 50 animals.', category: 'progress', target: 50, points: 200, coins: 1000),
+  AchievementDef(id: 'flag_master', title: 'Flag Master', description: 'Correctly identify 50 country flags.', category: 'progress', target: 50, points: 200, coins: 1000),
+  AchievementDef(id: 'comeback_kid', title: 'Never Give Up', description: 'Return to the game after a 7-day absence.', category: 'special', target: 1, points: 150, coins: 1000, isSpecial: true),
+  AchievementDef(id: 'all_rounder', title: 'All-Rounder', description: 'Earn an achievement in every category.', category: 'special', target: 5, points: 600, coins: 2000, isSpecial: true),
+  AchievementDef(id: 'early_bird', title: 'Early Bird', description: 'Complete a match before 8 AM.', category: 'special', target: 1, points: 100, coins: 1000, isSpecial: true),
 ];
 
 /// Single source of truth for player data across the app.
@@ -109,7 +114,6 @@ class GameData extends ChangeNotifier {
   int hints = 0;
   int streakDays = 0;
   int levelsToday = 0;
-  static const int dailyGoal = 3;
   static const int maxStarsPerLevel = 3;
   final List<String> worldKeys = ['animals', 'countries'];
 
@@ -138,8 +142,131 @@ class GameData extends ChangeNotifier {
   };
   int contentVersion = 0;
 
+  // ---- Remote config (admin-editable economy/gameplay values) ---------------
+  // Fetched from GET /config (or carried by sync snapshots), persisted to
+  // LocalStore so the app works offline with the last-known server values.
+  // Screens must read these instead of hardcoding coin/point amounts.
+  Map<String, dynamic> remoteConfig = {};
+
+  int _cfgInt(String key, int fallback) {
+    final v = remoteConfig[key];
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  int get adRewardCoins => _cfgInt('ad_reward_coins', 50);
+  int get adRewardHints => _cfgInt('ad_reward_hints', 1);
+  int get adRewardDailyCap => _cfgInt('ad_reward_daily_cap', 10);
+  int get dailyRewardPoints => _cfgInt('daily_reward_points', 25);
+  int get createBattleCost => _cfgInt('create_battle_cost', 1000);
+  int get quickBattleCost => _cfgInt('quick_battle_cost', 500);
+  int get battleWinnerCoins => _cfgInt('battle_winner_coins', 50);
+  int get battleWinnerBonusPoints => _cfgInt('battle_winner_bonus_points', 200);
+  int get battleAnswerPoints => _cfgInt('battle_answer_points', 100);
+  int get battleLifeRefillCost => _cfgInt('battle_life_refill_cost', 50);
+  int get hintPriceCoins => _cfgInt('hint_price_coins', 150);
+  int get timeBoostCostCoins => _cfgInt('time_boost_cost_coins', 100);
+  int get timeBoostSeconds => _cfgInt('time_boost_seconds', 15);
+  int get streakRepairCost => _cfgInt('streak_repair_cost', 300);
+  int get dailyGoal => _cfgInt('daily_goal', 3);
+  bool get contestEnabled => remoteConfig['contest_enabled'] is bool
+      ? remoteConfig['contest_enabled'] as bool
+      : (remoteConfig['contest_enabled'] as String? ?? 'true') != 'false';
+  int get contestWinnerCashMinor => _cfgInt('contest_winner_cash_minor', 1000000);
+  String get contestCurrency {
+    final v = remoteConfig['contest_currency'];
+    return v is String && v.isNotEmpty ? v : 'NGN';
+  }
+  int get contestWinnerCoins => _cfgInt('contest_winner_coins', 5000);
+  int get contestWinnerPoints => _cfgInt('contest_winner_points', 1000);
+  int get contestConsolationCoins => _cfgInt('contest_consolation_coins', 500);
+  int get guestFreeLevels => _cfgInt('guest_free_levels', 3);
+
+  /// Applies a server config map (from GET /config or a sync snapshot),
+  /// persists it for offline use and notifies listeners.
+  Future<void> applyRemoteConfig(Map<String, dynamic>? config) async {
+    if (config == null || config.isEmpty) return;
+    remoteConfig = config;
+    await _store.saveConfigCache(config);
+    notifyListeners();
+  }
+
+  /// Fetches the public config directly (guests, or when sync is idle).
+  Future<void> refreshRemoteConfig() async {
+    try {
+      final json = await _api.remoteConfig();
+      await applyRemoteConfig(json['config'] as Map<String, dynamic>?);
+    } on ApiException {
+      // Offline — keep the persisted values.
+    }
+  }
+
   // ---- Achievements ---------------------------------------------------------
   List<AchievementDef> achievements = kAchievementDefaults;
+
+  // ---- Notification inbox (server-synced) -----------------------------------
+  List<Map<String, dynamic>> notifications = [];
+  int unreadNotifications = 0;
+  String? _lastLocalNotifiedId;
+
+  /// Surfaces a brand-new server notification as an instant local
+  /// notification (foreground devices get nothing from FCM itself).
+  void _applyNotifications(dynamic raw) {
+    if (raw is! Map) return;
+    unreadNotifications = (raw['unread'] as num?)?.toInt() ?? 0;
+    final items = raw['items'];
+    if (items is! List) return;
+    notifications = items.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    if (notifications.isNotEmpty) {
+      final newest = notifications.first;
+      final id = newest['id'] as String?;
+      final read = newest['read'] as bool? ?? false;
+      if (id != null && id != _lastLocalNotifiedId && !read) {
+        _lastLocalNotifiedId = id;
+        // Best-effort; never fail a sync over a notification.
+        unawaited(
+          NotificationService.instance.showNow(
+            id: id.hashCode & 0x7fffffff,
+            title: newest['title'] as String? ?? 'Picture Match 🎯',
+            body: newest['body'] as String? ?? '',
+          ),
+        );
+      }
+    }
+  }
+
+  /// Refreshes the inbox directly (e.g. when opening the notifications screen).
+  Future<void> refreshNotifications() async {
+    try {
+      final json = await _api.contestNotifications();
+      notifications =
+          (json['notifications'] as List? ?? [])
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+      unreadNotifications = notifications.where((n) => n['read'] != true).length;
+      notifyListeners();
+    } on ApiException {
+      // Offline — keep cached items.
+    }
+  }
+
+  /// Marks notifications read (all, or just [ids]).
+  Future<void> markNotificationsRead([List<String>? ids]) async {
+    try {
+      final json = await _api.markNotificationsRead(ids);
+      unreadNotifications = (json['unread'] as num?)?.toInt() ?? 0;
+      notifications = notifications
+          .map((n) => ids == null || ids.contains(n['id'])
+              ? {...n, 'read': true}
+              : n)
+          .toList();
+      notifyListeners();
+    } on ApiException {
+      // Offline — the server converges on the next sync.
+    }
+  }
 
   // ---- Sync bookkeeping -----------------------------------------------------
   final List<Map<String, dynamic>> _pendingOps = [];
@@ -206,7 +333,10 @@ class GameData extends ChangeNotifier {
     if (loaded != null) {
       _content = loaded;
       contentVersion = content['version'] as int? ?? 0;
+      _rederiveUnlocks();
     }
+
+    remoteConfig = await _store.configCache;
 
     final cachedAchievements = (await _store.achievementsCache)['achievements']
         as List<dynamic>?;
@@ -215,6 +345,14 @@ class GameData extends ChangeNotifier {
           .map((a) => AchievementDef.fromJson(a as Map<String, dynamic>))
           .toList();
     }
+
+    // Guests never run trySync, so check the server's content version
+    // directly — otherwise admin-added levels never reach logged-out players.
+    if (user == null) {
+      unawaited(refreshContentIfStale());
+    }
+    // Everyone: pick up admin-edited economy values (costs, rewards, goal).
+    unawaited(refreshRemoteConfig());
   }
 
   Future<void> _persist() async {
@@ -317,7 +455,13 @@ class GameData extends ChangeNotifier {
       for (final world in worldKeys) {
         unlocked[world]?.add(0);
       }
+      // Levels added to the admin panel since the last play session unlock
+      // retroactively from the server's best-stars progress.
+      _rederiveUnlocks();
     }
+
+    await applyRemoteConfig(snapshot['config'] as Map<String, dynamic>?);
+    _applyNotifications(snapshot['notifications']);
 
     final state = snapshot['state'] as Map<String, dynamic>?;
     if (state?['lastCategory'] is String) {
@@ -347,16 +491,26 @@ class GameData extends ChangeNotifier {
     }
   }
 
+  /// Public, no-account version check so guests pick up admin-added levels.
+  Future<void> refreshContentIfStale() async {
+    try {
+      final json = await _api.contentVersion();
+      await _refreshContentIfStale(json['version'] as int?);
+    } on ApiException {
+      // Offline or unreachable — keep current content.
+    }
+  }
+
   /// Fetches the content manifest when the server version moved; the manifest
   /// is persisted so fetched game data works offline from then on.
-  Future<void> _refreshContentIfStale(int? serverVersion) async {
-    if (serverVersion == null || serverVersion == contentVersion) return;
+  Future<void> _refreshContentIfStale(int? serverVersion) async {    if (serverVersion == null || serverVersion == contentVersion) return;
     try {
       final manifest = await _api.contentManifest();
       final parsed = _parseContent(manifest);
       if (parsed != null) {
         _content = parsed;
         contentVersion = manifest['version'] as int;
+        _rederiveUnlocks();
         await _store.saveContent(manifest);
         notifyListeners();
       }
@@ -365,25 +519,24 @@ class GameData extends ChangeNotifier {
     }
   }
 
-  Map<String, List<GameLevel>>? _parseContent(Map<String, dynamic> manifest) {
-    try {
-      final levels = manifest['levels'] as List<dynamic>;
-      final result = <String, List<GameLevel>>{};
-      for (final level in levels) {
-        final world = level['world'] as String;
-        final items = (level['items'] as List)
-            .map((i) => MatchItem(
-                  id: i['id'] as String,
-                  word: i['word'] as String,
-                  picture: i['picture'] as String,
-                  hint: i['hint'] as String,
-                ))
-            .toList();
-        (result[world] ??= []).add(GameLevel(level['title'] as String, items));
+  Map<String, List<GameLevel>>? _parseContent(Map<String, dynamic> manifest) =>
+      parseContentManifest(manifest);
+
+  /// Re-derives unlock state from best stars. Essential when the level list
+  /// GROWS from the admin panel: a player who beat every level of the old
+  /// 6-level world must not find levels 7+ permanently locked.
+  void _rederiveUnlocks() {
+    for (final world in worldKeys) {
+      final levels = _content[world];
+      if (levels == null) continue;
+      final stars = bestStars[world] ??= {};
+      final unlockedSet = unlocked[world] ??= {0};
+      unlockedSet.add(0);
+      for (var i = 0; i < levels.length; i++) {
+        if ((stars[i] ?? 0) > 0 && i + 1 < levels.length) {
+          unlockedSet.add(i + 1);
+        }
       }
-      return result.isEmpty ? null : result;
-    } catch (_) {
-      return null;
     }
   }
 
@@ -394,6 +547,32 @@ class GameData extends ChangeNotifier {
   // =========================================================================
   // Gameplay mutations (update local state immediately, queue for sync)
   // =========================================================================
+
+  // ---- Guest free sample -----------------------------------------------------
+  // Guests can play the first `guestFreeLevels` levels of the first world;
+  // everything else is locked until they sign in. Mirrored server-side in the
+  // sync route so tweaked clients can't bypass it.
+
+  bool get _isGuestAccount => isGuest;
+
+  /// Whether THIS account may play [levelIndex] of [category].
+  bool canPlayLevel(String category, int levelIndex) {
+    if (!_isGuestAccount) return true;
+    return category == worldKeys.first && levelIndex < guestFreeLevels;
+  }
+
+  /// Whether the whole world is off-limits to this guest.
+  bool guestWorldLocked(String category) =>
+      _isGuestAccount && category != worldKeys.first;
+
+  /// The effective unlock set shown for a category (guest-capped).
+  Set<int> unlockedLevelsFor(String category) {
+    final base = unlocked[category] ?? {0};
+    if (!_isGuestAccount) return base;
+    return base
+        .where((i) => canPlayLevel(category, i))
+        .toSet();
+  }
 
   bool isWorldUnlocked(String category) {
     final index = worldKeys.indexOf(category);

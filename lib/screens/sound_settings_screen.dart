@@ -15,6 +15,8 @@ class SoundSettingsScreen extends StatefulWidget {
 class _SoundSettingsScreenState extends State<SoundSettingsScreen> {
   bool _sfx = true;
   bool _music = false;
+  double _sfxVolume = 1.0;
+  double _musicVolume = 0.6;
 
   @override
   void initState() {
@@ -22,6 +24,8 @@ class _SoundSettingsScreenState extends State<SoundSettingsScreen> {
     final sound = SoundService.instance;
     _sfx = sound.sfxEnabled;
     _music = sound.musicEnabled;
+    _sfxVolume = sound.sfxVolume;
+    _musicVolume = sound.musicVolume;
   }
 
   @override
@@ -63,6 +67,29 @@ class _SoundSettingsScreenState extends State<SoundSettingsScreen> {
             },
           ),
           const SizedBox(height: 12),
+          _volumeCard(
+            icon: Icons.music_note_rounded,
+            title: 'Music volume',
+            enabled: _music,
+            value: _musicVolume,
+            onChanged: (value) async {
+              await SoundService.instance.setMusicVolume(value);
+              setState(() => _musicVolume = value);
+            },
+          ),
+          const SizedBox(height: 12),
+          _volumeCard(
+            icon: Icons.volume_up_rounded,
+            title: 'Sound effects volume',
+            enabled: _sfx,
+            value: _sfxVolume,
+            onChanged: (value) async {
+              await SoundService.instance.setSfxVolume(value);
+              setState(() => _sfxVolume = value);
+            },
+            onChangeEnd: (_) => SoundService.instance.play(Sfx.click),
+          ),
+          const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -76,11 +103,83 @@ class _SoundSettingsScreenState extends State<SoundSettingsScreen> {
                 Expanded(
                   child: Text(
                     'Your choices are saved on this device and apply '
-                    'immediately — no account needed.',
+                    'immediately — no account needed. Music and sound '
+                    'effects play together.',
                     style: TextStyle(fontSize: 11.5, color: AppColors.ink),
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _volumeCard({
+    required IconData icon,
+    required String title,
+    required bool enabled,
+    required double value,
+    required ValueChanged<double> onChanged,
+    ValueChanged<double>? onChangeEnd,
+  }) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppColors.purple.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(icon,
+                color: enabled ? AppColors.purple : Colors.grey, size: 22),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: enabled ? AppColors.ink : Colors.grey)),
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 4,
+                    thumbShape:
+                        const RoundSliderThumbShape(enabledThumbRadius: 9),
+                  ),
+                  child: Slider(
+                    value: value,
+                    onChanged: enabled ? onChanged : null,
+                    onChangeEnd: enabled ? onChangeEnd : null,
+                    activeColor: AppColors.purple,
+                    inactiveColor: AppColors.palePurple,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            width: 38,
+            child: Text(
+              '${(value * 100).round()}%',
+              textAlign: TextAlign.end,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: enabled ? AppColors.ink : Colors.grey,
+              ),
             ),
           ),
         ],

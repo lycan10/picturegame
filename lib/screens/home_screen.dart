@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:picture_match/core/ads_service.dart';
 import 'package:picture_match/core/api_client.dart';
+import 'package:picture_match/core/formatters.dart';
 import 'package:picture_match/core/game_data.dart';
 import 'package:picture_match/core/sound_service.dart';
 import 'package:picture_match/screens/achievement_screen.dart';
@@ -11,7 +12,9 @@ import 'package:picture_match/screens/page_transitions.dart';
 import 'package:picture_match/screens/profile_screen.dart';
 import 'package:picture_match/screens/store_screen.dart';
 import '../theme/app_theme.dart';
+import 'contest_screen.dart';
 import 'level_selection_screen.dart';
+import 'notifications_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,9 +32,11 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     game.addListener(_onGameDataChanged);
-    // App-open interstitial (every 3rd launch, frequency-capped) — once the
-    // home screen is up so the ad never lands on a blank frame.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Ads on open: the dedicated app-open ad first (waits briefly for its
+    // preload); the every-3rd-launch interstitial only fires when no
+    // app-open ad is available, so opens never stack two ads.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await AdsService.instance.showAppOpenOnLaunch();
       AdsService.instance.maybeShowAppOpenInterstitial();
     });
   }
@@ -46,7 +51,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() {});
   }
 
-  bool _isWorldUnlocked(String category) => game.isWorldUnlocked(category);
+  bool _isWorldUnlocked(String category) =>
+      game.isWorldUnlocked(category) && !game.guestWorldLocked(category);
 
   // ---- Category metadata -----------------------------------------------
   static const _worlds = <String, _WorldInfo>{
@@ -78,7 +84,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _levelsFor(category).length * GameData.maxStarsPerLevel;
 
   int _furthestLevel(String category) {
-    final u = game.unlocked[category] ?? {0};
+    final u = game.unlockedLevelsFor(category);
     return u.reduce((a, b) => a > b ? a : b);
   }
 
@@ -91,7 +97,7 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(
         builder: (_) => LevelSelectionScreen(
           category: category,
-          unlockedLevels: game.unlocked[category] ?? {0},
+          unlockedLevels: game.unlockedLevelsFor(category),
           bestStars: game.bestStars[category] ?? {},
           onLevelCompleted: (levelIndex, points, stars) {
             game.completeLevel(category, levelIndex, points, stars);
@@ -119,6 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (dialogCtx) {
         final streak = game.streakDays;
         final coins = game.coins;
+        final cost = game.streakRepairCost;
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
           title: const Row(
@@ -137,9 +144,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
               ),
               const SizedBox(height: 10),
-              const Text(
-                'Did you miss a day or want to protect and extend your streak? You can repair your streak for 300 coins.',
-                style: TextStyle(fontSize: 14, color: Color(0xFF6B7280), height: 1.4),
+              Text(
+                'Did you miss a day or want to protect and extend your streak? '
+                'You can repair your streak for $cost coins — but only if it '
+                'broke within the last 7 days.',
+                style: const TextStyle(fontSize: 14, color: Color(0xFF6B7280), height: 1.4),
               ),
               const SizedBox(height: 14),
               Row(
@@ -161,11 +170,11 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             FilledButton.icon(
               onPressed: () async {
-                if (coins < 300) {
+                if (coins < cost) {
                   Navigator.pop(dialogCtx);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: const Text('You need at least 300 coins to repair your streak.'),
+                      content: Text('You need at least $cost coins to repair your streak.'),
                       action: SnackBarAction(
                         label: 'Get Coins',
                         onPressed: _openStore,
@@ -199,7 +208,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
               },
               icon: const Icon(Icons.shield_rounded, size: 18),
-              label: const Text('Repair (300 🪙)'),
+              label: Text('Repair ($cost 🪙)'),
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFFFF8A3D),
               ),
@@ -225,9 +234,9 @@ class _HomeScreenState extends State<HomeScreen> {
       body: Column(
         children: [
           Expanded(child: IndexedStack(index: selectedIndex, children: pages)),
-          // Anchored banner on the home tab only — gameplay and real-time
+          // Native ad on the home tab only — gameplay and real-time
           // battle tabs stay ad-free to avoid stealing interaction.
-          if (selectedIndex == 0) const BannerAdWidget(),
+          if (selectedIndex == 0) NativeAdWidget(),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -263,7 +272,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildHome() {
-    final goalDone = game.levelsToday >= GameData.dailyGoal;
+    final goalDone = game.levelsToday >= game.dailyGoal;
 
     return SafeArea(
       child: ListView(
@@ -274,11 +283,13 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildContinueCard(),
           const SizedBox(height: 16),
           _DailyGoalCard(
-            completed: game.levelsToday.clamp(0, GameData.dailyGoal),
-            goal: GameData.dailyGoal,
+            completed: game.levelsToday.clamp(0, game.dailyGoal),
+            goal: game.dailyGoal,
             done: goalDone,
             streakDays: game.streakDays,
           ),
+          const SizedBox(height: 16),
+          _ContestBanner(),
           const SizedBox(height: 28),
           const Text(
             'Choose your world',
@@ -327,13 +338,62 @@ class _HomeScreenState extends State<HomeScreen> {
         _StatChip(
           icon: Icons.stars_rounded,
           iconColor: const Color(0xFFF5B82E),
-          label: '${game.coins}',
+          label: formatCount(game.coins),
           semanticLabel: '${game.coins} coins. Open store',
           trailing: const Icon(Icons.add_circle_rounded,
               size: 18, color: AppColors.purple),
           onTap: _openStore,
         ),
         const Spacer(),
+        // Notification inbox: contest invites, match reminders, results.
+        Semantics(
+          button: true,
+          label: 'Notifications',
+          child: Material(
+            color: Colors.white,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: _openNotifications,
+              child: SizedBox(
+                width: 44,
+                height: 44,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    const Icon(Icons.notifications_rounded,
+                        color: AppColors.ink, size: 21),
+                    if (game.unreadNotifications > 0)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Container(
+                          padding: const EdgeInsets.all(3),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFEF4444),
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                          child: Text(
+                            game.unreadNotifications > 9
+                                ? '9+'
+                                : '${game.unreadNotifications}',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
         Semantics(
           button: true,
           label: 'Achievements',
@@ -358,6 +418,13 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  void _openNotifications() {
+    Navigator.push(
+      context,
+      PageTransitions.slideFromRight(const NotificationsScreen()),
     );
   }
 
@@ -425,7 +492,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         size: 20, color: Color(0xFFFFD76A)),
                     const SizedBox(width: 6),
                     Text(
-                      '${game.totalScore} points',
+                      '${formatCount(game.totalScore)} points',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w600,
@@ -768,6 +835,93 @@ class _WorldCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+
+/// Compact contest teaser under the daily goal — opens the contest screen.
+class _ContestBanner extends StatelessWidget {
+  final GameData game = GameData.instance;
+
+  _ContestBanner();
+
+  String get _money =>
+      '${formatCashMinor(game.contestWinnerCashMinor, game.contestCurrency)} + ${formatCount(game.contestWinnerCoins)} coins';
+
+  @override
+  Widget build(BuildContext context) {
+    if (!game.contestEnabled) return const SizedBox.shrink();
+    return AnimatedBuilder(
+      animation: game,
+      builder: (context, _) {
+        if (!game.contestEnabled) return const SizedBox.shrink();
+        return GestureDetector(
+          onTap: () {
+            if (!game.isLoggedIn) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Sign in to join the bi-weekly contest!'),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+              return;
+            }
+            Navigator.push(
+              context,
+              PageTransitions.slideFromRight(const ContestScreen()),
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF2E1065), Color(0xFF7057E8)],
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              children: [
+                const Text('🏆', style: TextStyle(fontSize: 26)),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Bi-weekly Contest',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 15,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Top 10 players battle · 5 winners',
+                        style: TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  'Win $_money',
+                  textAlign: TextAlign.end,
+                  style: const TextStyle(
+                    color: Color(0xFFF5B82E),
+                    fontWeight: FontWeight.w900,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.chevron_right_rounded, color: Colors.white70),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

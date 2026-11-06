@@ -7,6 +7,8 @@ import 'firebase_options.dart';
 import 'core/ads_service.dart';
 import 'core/app_config.dart';
 import 'core/game_data.dart';
+import 'core/app_nav.dart';
+import 'core/push_notification_service.dart';
 import 'core/games_services_manager.dart';
 import 'core/iap_service.dart';
 import 'core/sound_service.dart';
@@ -50,6 +52,11 @@ Future<void> main() async {
 
   // Sound effects + optional music (device-local settings).
   await SoundService.instance.init();
+
+  // FCM push (contest/battle notifications) — best-effort, never blocks.
+  try {
+    await PushNotificationService.instance.init();
+  } catch (_) {}
 
   // Initialize In-App Purchases
   try {
@@ -119,6 +126,7 @@ class PictureMatchApp extends StatelessWidget {
       title: 'Picture Match',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
+      navigatorKey: AppNav.key,
       home: const HomeScreen(),
     );
   }

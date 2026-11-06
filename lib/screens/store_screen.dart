@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../core/ads_service.dart';
+import '../core/formatters.dart';
 import '../core/game_data.dart';
 import '../core/iap_service.dart';
 import '../core/login_gate.dart';
@@ -798,15 +799,15 @@ class _StoreScreenState extends State<StoreScreen> {
           _freeRewardRow(
             icon: Icons.monetization_on_rounded,
             title: 'Free Coins',
-            reward: '+50 coins',
-            onTap: () => _watchAd('50 coins'),
+            reward: '+${formatCount(game.adRewardCoins)} coins',
+            onTap: () => _watchAd('${game.adRewardCoins} coins'),
           ),
           const SizedBox(height: 10),
           _freeRewardRow(
             icon: Icons.lightbulb_rounded,
             title: 'Free Hint',
-            reward: '+1 hint',
-            onTap: () => _watchAd('1 hint'),
+            reward: '+${game.adRewardHints} hint${game.adRewardHints == 1 ? '' : 's'}',
+            onTap: () => _watchAd('${game.adRewardHints} hint${game.adRewardHints == 1 ? '' : 's'}'),
           ),
           const SizedBox(height: 14),
           Text(
@@ -936,13 +937,7 @@ class _StoreScreenState extends State<StoreScreen> {
     );
   }
 
-  String _formatNumber(int number) {
-    if (number >= 1000) {
-      final value = number / 1000;
-      return '${value == value.roundToDouble() ? value.toInt() : value.toStringAsFixed(1)}K';
-    }
-    return number.toString();
-  }
+  String _formatNumber(int number) => formatCount(number);
 }
 
 class _HintDescription extends StatelessWidget {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
@@ -10,6 +12,12 @@ import 'package:timezone/timezone.dart' as tz;
 class NotificationService {
   NotificationService._();
   static final NotificationService instance = NotificationService._();
+
+  /// Payloads of locally-shown notifications the user tapped (e.g. a
+  /// quick-match invite shown while the app was in the foreground).
+  static final StreamController<String?> _tapController =
+      StreamController<String?>.broadcast();
+  static Stream<String?> get tapStream => _tapController.stream;
 
   static const _dailyReminderId = 1001;
   static const _channelId = 'daily_reminder';
@@ -27,7 +35,12 @@ class NotificationService {
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       iOS: DarwinInitializationSettings(),
     );
-    await _plugin.initialize(settings: settings);
+    await _plugin.initialize(
+      settings: settings,
+      onDidReceiveNotificationResponse: (response) {
+        _tapController.add(response.payload);
+      },
+    );
 
     tzdata.initializeTimeZones();
     try {
@@ -91,6 +104,34 @@ class NotificationService {
       ),
       androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       matchDateTimeComponents: DateTimeComponents.time,
+    );
+  }
+
+  /// Surfaces a server event instantly — e.g. a contest notification that
+  /// just arrived via sync while the app is in the foreground.
+  Future<void> showNow({
+    required int id,
+    required String title,
+    required String body,
+    String? payload,
+  }) async {
+    if (!isSupported) return;
+    await _ensureInitialized();
+    await _plugin.show(
+      id: id,
+      title: title,
+      body: body,
+      payload: payload,
+      notificationDetails: const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'server_events',
+          'Game updates',
+          channelDescription: 'Contest, battle and reward updates',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+      ),
     );
   }
 

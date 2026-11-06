@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../core/ads_service.dart';
+import '../core/formatters.dart';
 import '../core/game_data.dart';
 import '../core/sound_service.dart';
 import '../models/game_level.dart';
@@ -135,7 +136,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
               style: const TextStyle(color: Colors.black54, fontSize: 14),
             ),
             const SizedBox(height: 24),
-            if (GameData.instance.coins >= 100) ...[
+            if (GameData.instance.coins >= GameData.instance.timeBoostCostCoins) ...[
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
@@ -147,24 +148,26 @@ class _MatchGameScreenState extends State<MatchGameScreen>
                     ),
                   ),
                   icon: const Icon(Icons.stars_rounded, color: Color(0xFFF5B82E)),
-                  label: const Text(
-                    '+15 Seconds (100 🪙)',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  label: Text(
+                    '+${GameData.instance.timeBoostSeconds} Seconds (${formatCount(GameData.instance.timeBoostCostCoins)} 🪙)',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   onPressed: () async {
                     Navigator.pop(dialogContext);
-                    final spent = await GameData.instance.spendCoins(100);
+                    final spent = await GameData.instance
+                        .spendCoins(GameData.instance.timeBoostCostCoins);
                     if (spent) {
                       playSfx(Sfx.coin);
                       setState(() {
                         _timeUp = false;
-                        _timeLeft += 15;
+                        _timeLeft += GameData.instance.timeBoostSeconds;
                       });
                       _startTimer();
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('+15 seconds added to your time! ⚡'),
+                          SnackBar(
+                            content: Text(
+                                '+${GameData.instance.timeBoostSeconds} seconds added to your time! ⚡'),
                             behavior: SnackBarBehavior.floating,
                           ),
                         );
@@ -536,33 +539,36 @@ class _MatchGameScreenState extends State<MatchGameScreen>
         ),
         content: Text(
           'Hints reveal clues, remove wrong options and nudge you toward the '
-          'right picture. You can buy 1 hint instantly for 150 coins, '
+          'right picture. You can buy 1 hint instantly for '
+          '${GameData.instance.hintPriceCoins} coins, '
           'earn one free by watching a short ad, or grab a pack from the store.\n\n'
-          'Coin balance: ${GameData.instance.coins} 🪙',
+          'Coin balance: ${formatCount(GameData.instance.coins)} 🪙',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Not now'),
           ),
-          if (GameData.instance.coins >= 150)
+          if (GameData.instance.coins >= GameData.instance.hintPriceCoins)
             FilledButton.icon(
               onPressed: () async {
                 Navigator.pop(dialogContext);
-                final spent = await GameData.instance.spendCoins(150);
+                final spent = await GameData.instance
+                    .spendCoins(GameData.instance.hintPriceCoins);
                 if (spent && mounted) {
                   await GameData.instance.addHints(1);
                   playSfx(Sfx.coin);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Purchased 1 hint for 150 coins! 🎉'),
+                    SnackBar(
+                      content:
+                    Text('Purchased 1 hint for ${formatCount(GameData.instance.hintPriceCoins)} coins! 🎉'),
                       behavior: SnackBarBehavior.floating,
                     ),
                   );
                 }
               },
               icon: const Icon(Icons.stars_rounded, size: 17, color: Color(0xFFF5B82E)),
-              label: const Text('Buy 1 hint (150 🪙)'),
+              label: Text('Buy 1 hint (${formatCount(GameData.instance.hintPriceCoins)} 🪙)'),
               style: FilledButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
             ),
           TextButton.icon(
@@ -715,53 +721,54 @@ class _MatchGameScreenState extends State<MatchGameScreen>
     });
   }
 
-  /// Countdown bar, mirroring the battle screen's timer UI.
+  /// Compact circular countdown, mirroring the battle screen's timer UI.
   Widget _buildTimerBar() {
     final fraction = _totalSeconds == 0
         ? 0.0
         : (_timeLeft / _totalSeconds).clamp(0.0, 1.0);
     final urgent = _timeLeft <= 10;
 
-    return Column(
-      children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: TweenAnimationBuilder<double>(
-            duration: const Duration(milliseconds: 400),
-            tween: Tween(end: fraction),
-            builder: (context, value, _) => LinearProgressIndicator(
-              value: value,
-              minHeight: 9,
-              backgroundColor: AppColors.palePurple,
-              valueColor: AlwaysStoppedAnimation(
-                urgent ? Colors.redAccent : AppColors.purple,
-              ),
+    return TweenAnimationBuilder<double>(
+      duration: const Duration(milliseconds: 400),
+      tween: Tween(end: fraction),
+      builder: (context, value, _) => Row(
+        children: [
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CircularProgressIndicator(
+                  value: value,
+                  strokeWidth: 3.5,
+                  backgroundColor: AppColors.palePurple,
+                  valueColor: AlwaysStoppedAnimation(
+                    urgent ? Colors.redAccent : AppColors.purple,
+                  ),
+                ),
+                Text(
+                  '${_timeLeft}s',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: urgent ? Colors.redAccent : AppColors.ink,
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
-        const SizedBox(height: 6),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              '${_secondsPerItem}s per item',
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: Colors.black38,
-              ),
+          const Spacer(),
+          Text(
+            _timeUp ? "Time's up!" : '${_secondsPerItem}s per item',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: urgent || _timeUp ? Colors.redAccent : Colors.grey,
             ),
-            Text(
-              _timeUp ? "Time's up!" : '${_timeLeft}s left',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
-                color: urgent || _timeUp ? Colors.redAccent : Colors.grey,
-              ),
-            ),
-          ],
-        ),
-      ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -1174,7 +1181,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
               ),
             ),
 
-            const BannerAdWidget(),
+            NativeAdWidget(),
           ],
         ),
       ),

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/api_client.dart';
+import '../core/formatters.dart';
 import '../core/game_data.dart';
 import '../core/login_gate.dart';
 import '../theme/app_theme.dart';
@@ -13,7 +14,15 @@ import 'store_screen.dart';
 /// Battle Arena lobby: start a friend room, join one by code, or quick-match.
 /// Once a room goes active, this screen hands over to [BattleGameScreen].
 class BattleScreen extends StatefulWidget {
-  const BattleScreen({super.key});
+  /// When set (e.g. from a "opponent is waiting" push notification), the
+  /// screen opens straight into that room's waiting/lobby state.
+  final String? rejoinCode;
+
+  /// Whether the deep-linked rejoin is the room's host (default) or the
+  /// lobby guest waiting for the host to start.
+  final bool rejoinAsHost;
+
+  const BattleScreen({super.key, this.rejoinCode, this.rejoinAsHost = true});
 
   @override
   State<BattleScreen> createState() => _BattleScreenState();
@@ -21,6 +30,12 @@ class BattleScreen extends StatefulWidget {
 
 class _BattleScreenState extends State<BattleScreen> {
   bool isWaiting = false;
+  // Lobby: friend-room joiners wait here until the host accepts. The host
+  // sees the lobby guest and a "Start battle" action; joiners see a wait card.
+  bool _isHost = false;
+  bool _inLobby = false;
+  bool _canStart = false;
+  String? _lobbyGuestName;
 
   String roomCode = '';
   Timer? _pollTimer;
@@ -34,6 +49,15 @@ class _BattleScreenState extends State<BattleScreen> {
   void initState() {
     super.initState();
     GameData.instance.addListener(_onGameDataChanged);
+    // Deep link from a "your opponent is waiting" notification: reopen the
+    // room's waiting/lobby state so the host can accept.
+    final rejoin = widget.rejoinCode;
+    if (rejoin != null && rejoin.isNotEmpty) {
+      roomCode = rejoin;
+      isWaiting = true;
+      _isHost = widget.rejoinAsHost;
+      _startPolling();
+    }
   }
 
   @override
@@ -62,7 +86,7 @@ class _BattleScreenState extends State<BattleScreen> {
         ),
         content: Text(
           '$modeName costs $needed coins to enter. '
-          'You currently have ${GameData.instance.coins} coins.\n\n'
+          'You currently have ${formatCount(GameData.instance.coins)} coins.\n\n'
           'Visit the store to get coins or complete game levels to earn more!',
         ),
         actions: [
@@ -92,8 +116,9 @@ class _BattleScreenState extends State<BattleScreen> {
     if (!await ensureSignedIn(context)) return;
     if (!mounted) return;
 
-    if (GameData.instance.coins < 1000) {
-      _showNeedCoinsDialog(needed: 1000, modeName: 'Challenge a Friend');
+    final createCost = GameData.instance.createBattleCost;
+    if (GameData.instance.coins < createCost) {
+      _showNeedCoinsDialog(needed: createCost, modeName: 'Challenge a Friend');
       return;
     }
 
@@ -106,7 +131,7 @@ class _BattleScreenState extends State<BattleScreen> {
     } on ApiException catch (err) {
       if (!mounted || ticket != _actionTicket) return;
       if (err.message.contains('Not enough coins')) {
-        _showNeedCoinsDialog(needed: 1000, modeName: 'Challenge a Friend');
+        _showNeedCoinsDialog(needed: createCost, modeName: 'Challenge a Friend');
       } else {
         _showMessage(err.isNetworkError
             ? "You're offline — battles need an internet connection."
@@ -119,6 +144,10 @@ class _BattleScreenState extends State<BattleScreen> {
     setState(() {
       roomCode = code;
       isWaiting = true;
+      _isHost = true;
+      _inLobby = false;
+      _canStart = false;
+      _lobbyGuestName = null;
     });
 
     _showInviteDialog();
@@ -130,8 +159,9 @@ class _BattleScreenState extends State<BattleScreen> {
     if (!await ensureSignedIn(context)) return;
     if (!mounted) return;
 
-    if (GameData.instance.coins < 500) {
-      _showNeedCoinsDialog(needed: 500, modeName: 'Quick Match');
+    final quickCost = GameData.instance.quickBattleCost;
+    if (GameData.instance.coins < quickCost) {
+      _showNeedCoinsDialog(needed: quickCost, modeName: 'Quick Match');
       return;
     }
 
@@ -146,7 +176,7 @@ class _BattleScreenState extends State<BattleScreen> {
       if (!mounted || ticket != _actionTicket) return;
       _closeSearchDialog();
       if (err.message.contains('Not enough coins')) {
-        _showNeedCoinsDialog(needed: 500, modeName: 'Quick Match');
+        _showNeedCoinsDialog(needed: quickCost, modeName: 'Quick Match');
       } else {
         _showMessage(err.isNetworkError
             ? 'Quick match needs an internet connection.'
@@ -161,12 +191,18 @@ class _BattleScreenState extends State<BattleScreen> {
 
     // Someone was already waiting — the join happened server-side and deducted coins.
     if (status == 'active') {
-      await GameData.instance.spendCoins(500);
+      await GameData.instance.spendCoins(GameData.instance.quickBattleCost);
       await _enterBattle(code);
       return;
     }
 
-    setState(() => roomCode = code);
+    setState(() {
+      roomCode = code;
+      _isHost = true;
+      _inLobby = false;
+      _canStart = false;
+      _lobbyGuestName = null;
+    });
     _startPolling();
   }
 
@@ -289,14 +325,28 @@ class _BattleScreenState extends State<BattleScreen> {
       final json = await ApiClient.instance.joinBattleRoom(code);
       if (!dialogContext.mounted) return;
       final status = json['status'] as String?;
-      if (status != 'active') {
+      final inLobby = json['inLobby'] as bool? ?? false;
+      if (status != 'active' && !inLobby) {
         setJoining(false);
         setError('That room is no longer available');
         return;
       }
-      await GameData.instance.spendCoins(1000);
+      await GameData.instance.spendCoins(GameData.instance.createBattleCost);
       if (!dialogContext.mounted) return;
       Navigator.pop(dialogContext);
+      if (inLobby) {
+        // Friend-room lobby: the host must accept before the battle starts.
+        setState(() {
+          roomCode = code;
+          isWaiting = true;
+          _isHost = false;
+          _inLobby = true;
+          _canStart = false;
+        });
+        _showMessage('In the lobby — waiting for the host to start the battle');
+        _startPolling();
+        return;
+      }
       await _enterBattle(code);
     } on ApiException catch (err) {
       if (!dialogContext.mounted) return;
@@ -304,7 +354,7 @@ class _BattleScreenState extends State<BattleScreen> {
       if (err.message.contains('Not enough coins')) {
         Navigator.pop(dialogContext);
         if (mounted) {
-          _showNeedCoinsDialog(needed: 1000, modeName: 'Join Battle');
+          _showNeedCoinsDialog(needed: GameData.instance.createBattleCost, modeName: 'Join Battle');
         }
       } else {
         setError(err.isNetworkError ? 'No connection — try again' : err.message);
@@ -349,9 +399,26 @@ class _BattleScreenState extends State<BattleScreen> {
         if (!mounted || status == null) return;
         if (status == 'active') {
           timer.cancel();
-          final isQuick = _searchDialogOpen;
-          await GameData.instance.spendCoins(isQuick ? 500 : 1000);
+          // The host's local wallet mirrors the server charge at join time;
+          // joiners already spent locally when they joined.
+          if (_isHost) {
+            final isQuick = _searchDialogOpen;
+            await GameData.instance.spendCoins(isQuick
+                ? GameData.instance.quickBattleCost
+                : GameData.instance.createBattleCost);
+          }
           await _enterBattle(code);
+        } else if (status == 'waiting') {
+          final inLobby = state['inLobby'] as bool? ?? false;
+          final canStart = state['canStart'] as bool? ?? false;
+          final guestName =
+              (state['guest'] as Map<String, dynamic>?)?['name'] as String?;
+          if (!mounted) return;
+          setState(() {
+            _inLobby = inLobby;
+            _canStart = canStart;
+            _lobbyGuestName = inLobby ? guestName : null;
+          });
         } else if (status == 'expired') {
           timer.cancel();
           _closeDialogs();
@@ -386,6 +453,18 @@ class _BattleScreenState extends State<BattleScreen> {
     _actionTicket++; // invalidate in-flight requests
     _pollTimer?.cancel();
     final code = roomCode;
+    // A lobby guest just leaves — the room belongs to the host.
+    if (!_isHost) {
+      if (!mounted) return;
+      setState(() {
+        isWaiting = false;
+        _inLobby = false;
+        _canStart = false;
+        _lobbyGuestName = null;
+        roomCode = '';
+      });
+      return;
+    }
     if (code.isNotEmpty && GameData.instance.isLoggedIn) {
       try {
         await ApiClient.instance.cancelBattleRoom(code);
@@ -478,42 +557,76 @@ class _BattleScreenState extends State<BattleScreen> {
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
+            // Compact code + one-tap copy.
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
                 color: AppColors.purple.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(14),
                 border: Border.all(
                   color: AppColors.purple.withValues(alpha: 0.2),
                 ),
               ),
-              child: Column(
+              child: Row(
                 children: [
-                  const Text(
-                    'BATTLE ROOM CODE',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.5,
-                      color: Colors.grey,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'BATTLE ROOM CODE',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.2,
+                            color: Colors.grey,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          roomCode,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 3,
+                            color: AppColors.purple,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  SelectableText(
-                    roomCode,
-                    style: const TextStyle(
-                      fontSize: 30,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 5,
-                      color: AppColors.purple,
-                    ),
+                  IconButton(
+                    tooltip: 'Copy code',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: roomCode));
+                      _showMessage('Battle code copied — send it to your friend!');
+                    },
+                    icon: const Icon(Icons.copy_rounded,
+                        size: 20, color: AppColors.purple),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _showFriendPicker,
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  side: const BorderSide(color: AppColors.purple),
+                ),
+                icon: const Icon(Icons.person_add_rounded,
+                    size: 18, color: AppColors.purple),
+                label: const Text('Invite a friend',
+                    style: TextStyle(
+                        color: AppColors.purple,
+                        fontWeight: FontWeight.w800)),
+              ),
+            ),
+            const SizedBox(height: 12),
             const Row(
               children: [
                 Icon(
@@ -544,23 +657,6 @@ class _BattleScreenState extends State<BattleScreen> {
             child: const Text(
               'Close',
               style: TextStyle(color: Colors.grey),
-            ),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: roomCode));
-              Navigator.pop(dialogContext);
-              _inviteDialogOpen = false;
-              _showMessage('Battle code copied — send it to your friend!');
-            },
-            icon: const Icon(Icons.share_rounded, size: 18),
-            label: const Text('Copy Code'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.purple,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
             ),
           ),
         ],
@@ -599,16 +695,18 @@ class _BattleScreenState extends State<BattleScreen> {
               _buildBattleOption(
                 icon: Icons.people_alt_rounded,
                 title: 'Challenge a Friend',
-                subtitle: 'Invite a friend to a private battle (1,000 coins)',
-                tag: '1,000 🪙',
+                subtitle:
+                    'Invite a friend to a private battle (${formatCount(GameData.instance.createBattleCost)} coins)',
+                tag: '${formatCount(GameData.instance.createBattleCost)} 🪙',
                 onTap: _createRoom,
               ),
               const SizedBox(height: 12),
               _buildBattleOption(
                 icon: Icons.bolt_rounded,
                 title: 'Quick Match',
-                subtitle: 'Find an opponent and start playing (500 coins)',
-                tag: '500 🪙',
+                subtitle:
+                    'Find an opponent and start playing (${formatCount(GameData.instance.quickBattleCost)} coins)',
+                tag: '${formatCount(GameData.instance.quickBattleCost)} 🪙',
                 onTap: _quickMatch,
               ),
               const SizedBox(height: 12),
@@ -693,7 +791,7 @@ class _BattleScreenState extends State<BattleScreen> {
               ),
               const SizedBox(width: 4),
               Text(
-                '${GameData.instance.coins}',
+                '${formatCount(GameData.instance.coins)}',
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
@@ -1105,6 +1203,100 @@ class _BattleScreenState extends State<BattleScreen> {
             ),
           ),
           const SizedBox(height: 12),
+          if (_inLobby && !_isHost) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEFF6FF),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF3B82F6).withValues(alpha: 0.4)),
+              ),
+              child: Column(
+                children: [
+                  const Text(
+                    'In the lobby — waiting for the host to start…',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF1E40AF),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _leaveLobby,
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 11),
+                        side: const BorderSide(color: Colors.redAccent),
+                      ),
+                      icon: const Icon(Icons.exit_to_app_rounded,
+                          size: 17, color: Colors.redAccent),
+                      label: const Text('Leave lobby (coins refunded)',
+                          style: TextStyle(
+                              color: Colors.redAccent,
+                              fontWeight: FontWeight.w800)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ] else if (_inLobby && _canStart) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0FDF4),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.4)),
+              ),
+              child: Column(
+                children: [
+                  Text(
+                    '$_lobbyGuestName is waiting in the lobby!',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF166534),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _startBattle,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        padding: const EdgeInsets.symmetric(vertical: 11),
+                      ),
+                      icon: const Icon(Icons.play_arrow_rounded),
+                      label: const Text('Start battle',
+                          style: TextStyle(fontWeight: FontWeight.w800)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ] else ...[
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _showFriendPicker,
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  side: const BorderSide(color: AppColors.purple),
+                ),
+                icon: const Icon(Icons.person_add_rounded, size: 18, color: AppColors.purple),
+                label: const Text('Invite a friend',
+                    style: TextStyle(
+                        color: AppColors.purple, fontWeight: FontWeight.w800)),
+              ),
+            ),
+            const SizedBox(height: 4),
+          ],
           TextButton(
             onPressed: _cancelRoom,
             child: const Text(
@@ -1113,6 +1305,161 @@ class _BattleScreenState extends State<BattleScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Lobby guest leaves: server frees the slot and refunds both players.
+  Future<void> _leaveLobby() async {
+    final code = roomCode;
+    if (code.isEmpty) return;
+    try {
+      final json = await ApiClient.instance.leaveLobby(code);
+      final refunded = (json['refunded'] as num?)?.toInt() ?? 0;
+      if (refunded > 0) await GameData.instance.addCoins(refunded);
+      if (!mounted) return;
+      setState(() {
+        isWaiting = false;
+        _inLobby = false;
+        _canStart = false;
+        _lobbyGuestName = null;
+        roomCode = '';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('You left the lobby — $refunded coins refunded.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on ApiException catch (err) {
+      if (!mounted) return;
+      _showMessage(err.isNetworkError
+          ? 'You are offline — leaving needs a connection.'
+          : err.message);
+      // The lobby may have moved on regardless — the next poll reconciles.
+      if (err.status != null) {
+        setState(() {
+          isWaiting = false;
+          _inLobby = false;
+          roomCode = '';
+        });
+      }
+    }
+  }
+
+  /// Host accepts the lobby: activates the battle and enters it.
+  Future<void> _startBattle() async {
+    final code = roomCode;
+    if (code.isEmpty || !mounted) return;
+    try {
+      await ApiClient.instance.startBattle(code);
+      if (!mounted) return;
+      // Mirror the server charge that happened when the opponent joined.
+      await GameData.instance.spendCoins(GameData.instance.createBattleCost);
+      await _enterBattle(code);
+    } on ApiException catch (err) {
+      _showMessage(err.isNetworkError
+          ? 'You are offline — starting needs a connection.'
+          : err.message);
+    }
+  }
+
+  /// Lets the host pick one of their friends and send a battle invite push.
+  Future<void> _showFriendPicker() async {
+    List<Map<String, dynamic>> friends = [];
+    String? error;
+    final invited = <String>{};
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          // Load once.
+          if (friends.isEmpty && error == null && !invited.isNotEmpty) {
+            ApiClient.instance.friends().then((json) {
+              if (!dialogContext.mounted) return;
+              setDialogState(() {
+                friends = (json['friends'] as List? ?? [])
+                    .whereType<Map>()
+                    .map((e) => Map<String, dynamic>.from(e))
+                    .toList();
+              });
+            }).catchError((Object e) {
+              if (!dialogContext.mounted) return;
+              setDialogState(() => error = 'Could not load friends');
+            });
+          }
+
+          return AlertDialog(
+            backgroundColor: AppColors.canvas,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            title: const Text('Invite a friend',
+                style: TextStyle(fontWeight: FontWeight.bold, color: AppColors.ink)),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: error != null
+                  ? Text(error!, style: const TextStyle(color: Colors.redAccent, fontSize: 13))
+                  : friends.isEmpty
+                      ? const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: Text(
+                            'No friends yet. Add friends from the Friends screen, '
+                            'the leaderboard, or after a quick match!',
+                            style: TextStyle(fontSize: 13, height: 1.4),
+                          ),
+                        )
+                      : ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: friends.length,
+                          itemBuilder: (context, i) {
+                            final f = friends[i];
+                            final isInvited = invited.contains(f['userId']);
+                            return ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor: AppColors.purple.withValues(alpha: 0.12),
+                                child: Text(f['avatar'] as String? ?? '🧑',
+                                    style: const TextStyle(fontSize: 16)),
+                              ),
+                              title: Text(f['name'] as String? ?? '',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w800, fontSize: 13.5)),
+                              subtitle: Text(f['username'] as String? ?? '',
+                                  style: const TextStyle(fontSize: 11)),
+                              trailing: isInvited
+                                  ? const Icon(Icons.check_circle_rounded,
+                                      color: Color(0xFF10B981))
+                                  : TextButton(
+                                      onPressed: () async {
+                                        try {
+                                          await ApiClient.instance.inviteFriendToBattle(
+                                              roomCode, f['userId'] as String);
+                                          setDialogState(() => invited.add(f['userId'] as String));
+                                        } on ApiException catch (err) {
+                                          if (!dialogContext.mounted) return;
+                                          ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                            SnackBar(
+                                                content: Text(err.message),
+                                                behavior: SnackBarBehavior.floating),
+                                          );
+                                        }
+                                      },
+                                      child: const Text('Invite',
+                                          style: TextStyle(
+                                              color: AppColors.purple,
+                                              fontWeight: FontWeight.w800)),
+                                    ),
+                            );
+                          },
+                        ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Close', style: TextStyle(color: Colors.grey)),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

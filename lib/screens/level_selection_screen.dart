@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../core/ads_service.dart';
 import '../core/game_data.dart';
+import '../core/login_gate.dart';
 import '../models/game_level.dart';
 import '../theme/app_theme.dart';
 import 'match_game_screen.dart';
@@ -25,12 +26,91 @@ class LevelSelectionScreen extends StatefulWidget {
 }
 
 class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
-  List<GameLevel> get levels => GameData.instance.levelsFor(widget.category);
+  final GameData game = GameData.instance;
+
+  List<GameLevel> get levels => game.levelsFor(widget.category);
+
+  /// Effective unlock set: guests are capped to the free-sample levels.
+  Set<int> get effectiveUnlocked => game.unlockedLevelsFor(widget.category);
+
+  /// Opens a level. Guests first watch a rewarded interstitial (the "ticket"
+  /// for playing without an account); when no ad fills, they play anyway.
+  Future<void> _openLevelAsGuest(int index) async {
+    await AdsService.instance.showRewardedInterstitial(
+      onDone: () => _openLevel(index),
+    );
+    if (mounted) setState(() {});
+  }
+
+  /// Explains the guest free sample and offers sign-in.
+  Future<void> _showGuestUpgradeDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.lock_rounded, color: AppColors.purple),
+            SizedBox(width: 10),
+            Text('Sign in to unlock', style: TextStyle(fontWeight: FontWeight.w800)),
+          ],
+        ),
+        content: Text(
+          'You are playing as a guest — the first ${game.guestFreeLevels} levels '
+          'of ${widget.category == 'countries' ? 'Flags of the World' : 'Animal Kingdom'} '
+          'are free.\n\nSign in to unlock ALL levels and worlds, battles with friends, '
+          'leaderboards, achievements and daily rewards.',
+          style: const TextStyle(height: 1.45, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Not now', style: TextStyle(color: Colors.grey)),
+          ),
+          FilledButton.icon(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await ensureSignedIn(context);
+              if (mounted) setState(() {});
+            },
+            style: FilledButton.styleFrom(backgroundColor: AppColors.purple),
+            icon: const Icon(Icons.login_rounded, size: 18),
+            label: const Text('Sign in'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Re-check the server's content version on open so admin-added levels
+    // show up without an app restart (covers guests and logged-in players).
+    game.refreshContentIfStale();
+    // Rebuild when the manifest/config arrives (GameData is a ChangeNotifier).
+    game.addListener(_onGameData);
+  }
+
+  void _onGameData() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    game.removeListener(_onGameData);
+    super.dispose();
+  }
 
   String get title =>
       widget.category == 'animals' ? 'Animal Kingdom' : 'Flags of the World';
 
   Future<void> _openLevel(int index) async {
+    // Server-enforced too; this guard keeps the UI honest.
+    if (!game.canPlayLevel(widget.category, index)) {
+      await _showGuestUpgradeDialog();
+      return;
+    }
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
@@ -79,6 +159,44 @@ class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
             'Complete a level to unlock the next one.',
             style: TextStyle(color: Colors.black54),
           ),
+          if (game.isGuest) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBEB),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFF5B82E).withValues(alpha: 0.45)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.emoji_events_rounded, color: Color(0xFFB77900), size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Guest mode: the first ${game.guestFreeLevels} levels are free. '
+                      'Sign in to unlock every level, world, battle and reward!',
+                      style: const TextStyle(fontSize: 12, height: 1.4),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () async {
+                      await ensureSignedIn(context);
+                      if (mounted) setState(() {});
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.purple,
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      minimumSize: const Size(0, 34),
+                    ),
+                    child: const Text('Sign in',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
           GridView.builder(
             shrinkWrap: true,
@@ -91,12 +209,25 @@ class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
               childAspectRatio: 1.05,
             ),
             itemBuilder: (context, index) {
-              final isUnlocked = widget.unlockedLevels.contains(index);
+              final isUnlocked = effectiveUnlocked.contains(index);
               final stars = widget.bestStars[index] ?? 0;
+              final guestLocked = game.isGuest && !game.canPlayLevel(widget.category, index);
 
               return InkWell(
                 borderRadius: BorderRadius.circular(22),
-                onTap: isUnlocked ? () => _openLevel(index) : null,
+                onTap: () {
+                  if (game.isGuest) {
+                    // Guests: playable free levels open through a rewarded
+                    // interstitial; anything else pitches sign-in.
+                    if (game.canPlayLevel(widget.category, index)) {
+                      _openLevelAsGuest(index);
+                    } else {
+                      _showGuestUpgradeDialog();
+                    }
+                    return;
+                  }
+                  if (isUnlocked) _openLevel(index);
+                },
                 child: Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -127,6 +258,15 @@ class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
                               color: isUnlocked ? AppColors.purple : Colors.grey,
                             ),
                           ),
+                          if (guestLocked)
+                            const Text(
+                              'Sign in',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w900,
+                                color: AppColors.purple,
+                              ),
+                            ),
                           Text(
                             'LEVEL ${index + 1}',
                             style: const TextStyle(
@@ -160,7 +300,7 @@ class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
         ],
       ),
           ),
-          const BannerAdWidget(),
+          NativeAdWidget(),
         ],
       ),
     );

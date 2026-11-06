@@ -130,4 +130,12 @@ class LocalStore {
   Future<Map<String, dynamic>> get achievementsCache => getJson(_kAchievementsCache);
   Future<void> saveAchievementsCache(Map<String, dynamic> v) =>
       setJson(_kAchievementsCache, v);
+
+  // ---- Cached server config (economy/gameplay values) ----------------------
+
+  static const _kConfigCache = 'config_cache';
+
+  Future<Map<String, dynamic>> get configCache => getJson(_kConfigCache);
+  Future<void> saveConfigCache(Map<String, dynamic> v) =>
+      setJson(_kConfigCache, v);
 }

@@ -323,6 +323,82 @@ class ApiClient {
 
   Future<Map<String, dynamic>> contentManifest() => _send('GET', '/content');
 
+  /// Public economy/gameplay config (admin-editable server values).
+  Future<Map<String, dynamic>> remoteConfig() => _send('GET', '/config');
+
+  // ---- Contest + notifications ------------------------------------------------
+
+  Future<Map<String, dynamic>> contestCurrent() =>
+      _send('GET', '/contest/current', authorized: true);
+
+  Future<Map<String, dynamic>> enterContestMatch(String matchId) =>
+      _send('POST', '/contest/matches/$matchId/enter', authorized: true);
+
+  Future<Map<String, dynamic>> contestNotifications() =>
+      _send('GET', '/contest/notifications', authorized: true);
+
+  Future<Map<String, dynamic>> markNotificationsRead([List<String>? ids]) =>
+      _send('POST', '/contest/notifications/read',
+          authorized: true, body: ids == null ? {} : {'ids': ids});
+
+  // ---- Friends -----------------------------------------------------------------
+
+  Future<Map<String, dynamic>> friends() => _send('GET', '/friends', authorized: true);
+
+  Future<Map<String, dynamic>> friendStatus(String userId) =>
+      _send('GET', '/friends/status/$userId', authorized: true);
+
+  Future<Map<String, dynamic>> friendLookup(String query) =>
+      _send('GET', '/friends/lookup?q=${Uri.encodeComponent(query)}', authorized: true);
+
+  Future<Map<String, dynamic>> sendFriendRequest(String userId) =>
+      _send('POST', '/friends/$userId/request', authorized: true);
+
+  Future<Map<String, dynamic>> acceptFriendRequest(String userId) =>
+      _send('POST', '/friends/$userId/accept', authorized: true);
+
+  Future<Map<String, dynamic>> removeFriend(String userId) =>
+      _send('DELETE', '/friends/$userId', authorized: true);
+
+  Future<Map<String, dynamic>> inviteFriendToBattle(String code, String friendId) =>
+      _send('POST', '/battles/rooms/$code/invite', authorized: true, body: {'friendId': friendId});
+
+  /// Lobby guest leaves: slot freed, both players refunded.
+  Future<Map<String, dynamic>> leaveLobby(String code) =>
+      _send('DELETE', '/battles/rooms/$code/lobby', authorized: true);
+
+  Future<Map<String, dynamic>> startBattle(String code) =>
+      _send('POST', '/battles/rooms/$code/start', authorized: true);
+
+  // ---- Payout details ----------------------------------------------------------
+
+  Future<Map<String, dynamic>> payoutDetails() =>
+      _send('GET', '/profile/payout-details', authorized: true);
+
+  Future<Map<String, dynamic>> savePayoutDetails({
+    required String holderName,
+    required String bankCode,
+    required String bankName,
+    required String accountNumber,
+    String? phone,
+  }) =>
+      _send('PUT', '/profile/payout-details', authorized: true, body: {
+        'holderName': holderName,
+        'bankCode': bankCode,
+        'bankName': bankName,
+        'accountNumber': accountNumber,
+        if (phone != null && phone.isNotEmpty) 'phone': phone,
+      });
+
+  Future<Map<String, dynamic>> clearPayoutDetails() =>
+      _send('DELETE', '/profile/payout-details', authorized: true);
+
+  Future<Map<String, dynamic>> banks() => _send('GET', '/profile/banks', authorized: true);
+
+  Future<Map<String, dynamic>> registerDeviceToken(String token, String platform) =>
+      _send('POST', '/profile/device-token',
+          authorized: true, body: {'token': token, 'platform': platform});
+
   // ---- Leaderboard / profile / store / achievements --------------------------
 
   Future<Map<String, dynamic>> leaderboard(String period) =>
@@ -424,6 +500,10 @@ class ApiClient {
 
   Future<Map<String, dynamic>> joinBattleRoom(String code) =>
       _send('POST', '/battles/rooms/$code/join', authorized: true);
+
+  /// Quick-match invite details for the confirmation screen (join or "taken").
+  Future<Map<String, dynamic>> battleInviteInfo(String code) =>
+      _send('GET', '/battles/rooms/$code/invite', authorized: true);
 
   Future<Map<String, dynamic>> battleState(String code) =>
       _send('GET', '/battles/rooms/$code', authorized: true);

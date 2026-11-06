@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/formatters.dart';
 import '../core/game_data.dart';
 import '../core/login_gate.dart';
 import '../theme/app_theme.dart';
@@ -21,6 +22,7 @@ class Achievement {
   final int progress;
   final int target;
   final int points;
+  final int coins;
   final bool claimed;
   final bool isSpecial;
 
@@ -33,6 +35,7 @@ class Achievement {
     required this.progress,
     required this.target,
     required this.points,
+    this.coins = 0,
     this.claimed = false,
     this.isSpecial = false,
   });
@@ -101,6 +104,7 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
             progress: def.progress,
             target: def.target,
             points: def.points,
+            coins: def.coins,
             claimed: def.claimed,
             isSpecial: def.isSpecial,
           ))
@@ -138,7 +142,7 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
       SnackBar(
         content: Text(
           error ??
-              '+${achievement.points} points claimed for ${achievement.title}!',
+              '+${achievement.points} points and +${achievement.coins} coins claimed for ${achievement.title}!',
         ),
         behavior: SnackBarBehavior.floating,
       ),
@@ -343,7 +347,7 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '$claimedPoints points claimed',
+                  '${formatCount(claimedPoints)} points claimed',
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w600,
@@ -352,7 +356,7 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
                 ),
               ),
               Text(
-                '$totalPoints possible',
+                '${formatCount(totalPoints)} possible',
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.8),
                   fontSize: 11,
@@ -412,17 +416,17 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
                   ),
                 ),
                 const SizedBox(height: 7),
-                const Row(
+                Row(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.stars_rounded,
                       color: Color(0xFFB77900),
                       size: 16,
                     ),
-                    SizedBox(width: 5),
+                    const SizedBox(width: 5),
                     Text(
-                      '+25 points daily',
-                      style: TextStyle(
+                      '+${game.dailyRewardPoints} points daily',
+                      style: const TextStyle(
                         color: Color(0xFF9A6700),
                         fontWeight: FontWeight.bold,
                         fontSize: 12,
@@ -441,7 +445,8 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(error ?? 'Daily reward claimed! +25 points'),
+                          content: Text(
+                              error ?? 'Daily reward claimed! +${formatCount(game.dailyRewardPoints)} points'),
                           behavior: SnackBarBehavior.floating,
                         ),
                       );
@@ -656,13 +661,30 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
                     ),
                     const SizedBox(width: 4),
                     Text(
-                      '+${achievement.points} points',
+                      '+${formatCount(achievement.points)} points',
                       style: const TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF9A6700),
                       ),
                     ),
+                    if (achievement.coins > 0) ...[
+                      const SizedBox(width: 10),
+                      const Icon(
+                        Icons.monetization_on_rounded,
+                        color: Color(0xFFE5A000),
+                        size: 15,
+                      ),
+                      const SizedBox(width: 3),
+                      Text(
+                        '+${formatCount(achievement.coins)}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF9A6700),
+                        ),
+                      ),
+                    ],
                     const Spacer(),
                     if (unlocked)
                       claimed

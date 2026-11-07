@@ -8,6 +8,7 @@ import 'core/ads_service.dart';
 import 'core/app_config.dart';
 import 'core/game_data.dart';
 import 'core/app_nav.dart';
+import 'core/notification_service.dart';
 import 'core/push_notification_service.dart';
 import 'core/games_services_manager.dart';
 import 'core/iap_service.dart';
@@ -52,6 +53,11 @@ Future<void> main() async {
 
   // Sound effects + optional music (device-local settings).
   await SoundService.instance.init();
+
+  // Daily reminder: re-arm the OS schedule if it's enabled (self-healing).
+  try {
+    await NotificationService.instance.init();
+  } catch (_) {}
 
   // FCM push (contest/battle notifications) — best-effort, never blocks.
   try {

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../core/api_client.dart';
 import '../core/formatters.dart';
 import '../core/game_data.dart';
+import 'package:share_plus/share_plus.dart';
 import '../core/login_gate.dart';
 import '../theme/app_theme.dart';
 import 'battle_game_screen.dart';
@@ -479,6 +480,23 @@ class _BattleScreenState extends State<BattleScreen> {
     });
   }
 
+  /// Opens the native share sheet with a properly framed invite message.
+  Future<void> _shareBattleInvite() async {
+    final host = GameData.instance.displayName;
+    await SharePlus.instance.share(
+      ShareParams(
+        title: '⚔️ Battle invite: $roomCode',
+        text: '⚔️ $host challenged you to a battle in Picture Match!\n\n'
+            'Join with this code: $roomCode\n\n'
+            'How to play:\n'
+            '1. Open Picture Match\n'
+            '2. Go to Battles → Join a Battle\n'
+            '3. Enter the code above\n\n'
+            '3 lives each — last player standing wins! 🏆',
+      ),
+    );
+  }
+
   void _copyCode() {
     Clipboard.setData(ClipboardData(text: roomCode));
     _showMessage('Battle code copied — send it to your friend!');
@@ -604,6 +622,14 @@ class _BattleScreenState extends State<BattleScreen> {
                       _showMessage('Battle code copied — send it to your friend!');
                     },
                     icon: const Icon(Icons.copy_rounded,
+                        size: 20, color: AppColors.purple),
+                  ),
+                  IconButton(
+                    tooltip: 'Share invite',
+                    onPressed: () {
+                      unawaited(_shareBattleInvite());
+                    },
+                    icon: const Icon(Icons.share_rounded,
                         size: 20, color: AppColors.purple),
                   ),
                 ],
@@ -791,7 +817,7 @@ class _BattleScreenState extends State<BattleScreen> {
               ),
               const SizedBox(width: 4),
               Text(
-                '${formatCount(GameData.instance.coins)}',
+                formatCount(GameData.instance.coins),
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
@@ -1178,29 +1204,42 @@ class _BattleScreenState extends State<BattleScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          InkWell(
-            onTap: _copyCode,
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.all(2),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Room: $roomCode',
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: AppColors.purple,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.5,
-                    ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              InkWell(
+                onTap: _copyCode,
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Room: $roomCode',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.purple,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Icon(Icons.copy_rounded,
+                          size: 14, color: AppColors.purple),
+                    ],
                   ),
-                  const SizedBox(width: 6),
-                  const Icon(Icons.copy_rounded,
-                      size: 14, color: AppColors.purple),
-                ],
+                ),
               ),
-            ),
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: 'Share invite',
+                visualDensity: VisualDensity.compact,
+                onPressed: _shareBattleInvite,
+                icon: const Icon(Icons.share_rounded,
+                    size: 18, color: AppColors.purple),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           if (_inLobby && !_isHost) ...[

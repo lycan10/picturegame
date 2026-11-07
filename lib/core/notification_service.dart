@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
@@ -76,10 +77,13 @@ class NotificationService {
     return false;
   }
 
-  /// Schedules (or reschedules) the daily reminder at [hour]:[minute] local time.
+  /// Schedules (or reschedules) the daily reminder at [hour]:[minute] local
+  /// time. The body reflects the current streak so the nudge stays relevant;
+  /// it's refreshed every time the app runs (init re-arms the schedule).
   Future<void> scheduleDailyReminder({
     required int hour,
     required int minute,
+    int? streakDays,
   }) async {
     await _ensureInitialized();
 
@@ -90,7 +94,9 @@ class NotificationService {
     await _plugin.zonedSchedule(
       id: _dailyReminderId,
       title: 'Keep your streak alive! 🔥',
-      body: 'A quick match today keeps your daily goal on track.',
+      body: (streakDays ?? 0) > 0
+          ? 'Your ${streakDays}-day streak is waiting — a quick match keeps it alive! 🔥'
+          : 'A quick match today keeps your daily goal on track.',
       scheduledDate: when,
       notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
@@ -105,6 +111,47 @@ class NotificationService {
       androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       matchDateTimeComponents: DateTimeComponents.time,
     );
+  }
+
+  // ---- Daily reminder state (shared with NotificationSettingsScreen) -------
+  // The settings screen persists these keys; init() re-arms the OS schedule
+  // from them at every launch so the reminder survives reboots, app-data
+  // restores and timezone changes.
+  static const reminderEnabledKey = 'notif_daily_enabled';
+  static const reminderHourKey = 'notif_daily_hour';
+  static const reminderMinuteKey = 'notif_daily_minute';
+
+  bool reminderEnabled = false;
+  int reminderHour = 19;
+  int reminderMinute = 0;
+
+  /// Called once at app startup: re-arms the daily reminder if it's enabled.
+  Future<void> init() async {
+    await _ensureInitialized();
+    final prefs = await SharedPreferences.getInstance();
+    reminderEnabled = prefs.getBool(reminderEnabledKey) ?? false;
+    reminderHour = prefs.getInt(reminderHourKey) ?? 19;
+    reminderMinute = prefs.getInt(reminderMinuteKey) ?? 0;
+    if (reminderEnabled) {
+      await scheduleDailyReminder(hour: reminderHour, minute: reminderMinute);
+    }
+  }
+
+  /// Re-reads the persisted state after the settings screen changes it.
+  Future<void> refreshReminderState() async {
+    final prefs = await SharedPreferences.getInstance();
+    reminderEnabled = prefs.getBool(reminderEnabledKey) ?? false;
+    reminderHour = prefs.getInt(reminderHourKey) ?? 19;
+    reminderMinute = prefs.getInt(reminderMinuteKey) ?? 0;
+  }
+
+  /// How many notifications are currently scheduled by the OS (1 when the
+  /// daily reminder is armed) — used to surface real schedule status.
+  Future<int> pendingScheduledCount() async {
+    if (!isSupported) return 0;
+    await _ensureInitialized();
+    final pending = await _plugin.pendingNotificationRequests();
+    return pending.length;
   }
 
   /// Surfaces a server event instantly — e.g. a contest notification that

@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
+import '../core/notification_service.dart';
 import '../core/game_data.dart';
 import '../core/formatters.dart';
 import '../theme/app_theme.dart';
@@ -797,16 +798,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 15),
           child: Column(
         children: [
-          _accountTile(
-            icon: Icons.notifications_none_rounded,
-            title: 'Notifications',
-            subtitle: 'Manage your reminders',
-            onTap: () => Navigator.push<void>(
-              context,
-              MaterialPageRoute(
-                  builder: (_) => const NotificationSettingsScreen()),
-            ),
-          ),
+          Builder(builder: (_) {
+            final n = NotificationService.instance;
+            return _accountTile(
+              icon: Icons.notifications_none_rounded,
+              title: 'Notifications',
+              subtitle: n.reminderEnabled
+                  ? 'Daily reminder at '
+                      '${n.reminderHour.toString().padLeft(2, '0')}:'
+                      '${n.reminderMinute.toString().padLeft(2, '0')}'
+                  : 'Manage your reminders',
+              onTap: () => Navigator.push<void>(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const NotificationSettingsScreen()),
+              ),
+            );
+          }),
           _divider(),
           _accountTile(
             icon: Icons.volume_up_outlined,

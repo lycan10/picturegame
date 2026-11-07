@@ -9,70 +9,60 @@ import '../screens/login_screen.dart';
 /// open to everyone — anything that needs a server identity requires a real
 /// (non-guest) account, and guests are routed through the upgrade flow so
 /// their existing progress is preserved.
-Future<bool> ensureSignedIn(BuildContext context) async {
+///
+/// The gate is ONE consistent "Sign in to unlock" modal used everywhere in
+/// the app (no snackbars, no bottom sheets) so the sign-in pitch always looks
+/// and behaves the same.
+Future<bool> ensureSignedIn(
+  BuildContext context, {
+  String? title,
+  String? message,
+}) async {
   final game = GameData.instance;
   if (game.isLoggedIn && !game.isGuest) return true;
 
   final isGuest = game.isLoggedIn && game.isGuest;
+  final effectiveTitle = title ?? (isGuest ? 'Save your progress' : 'Sign in to unlock');
+  final effectiveMessage = message ??
+      (isGuest
+          ? 'You are playing as a guest. Create a free account to keep your '
+              'coins, streak and stars — and to use this feature.'
+          : 'This feature needs an account so your progress, purchases and '
+              'rankings stay safe. Sign in to unlock every world and level, '
+              'battles with friends, leaderboards, achievements and daily '
+              'rewards.');
 
-  final action = await showModalBottomSheet<String>(
+  final action = await showDialog<String>(
     context: context,
-    backgroundColor: Colors.white,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-    ),
-    builder: (sheetContext) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Center(
-              child: Icon(Icons.lock_rounded, size: 34, color: AppColors.purple),
-            ),
-            const SizedBox(height: 14),
-            Text(
-              isGuest ? 'Save your progress' : 'Sign in required',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
-                color: AppColors.ink,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              isGuest
-                  ? 'You are playing as a guest. Create a free account to keep your coins, streak and stars — and to use this feature.'
-                  : 'This feature needs an account so your progress, purchases and rankings stay safe.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 13,
-                height: 1.5,
-                color: AppColors.ink.withValues(alpha: 0.65),
-              ),
-            ),
-            const SizedBox(height: 22),
-            FilledButton(
-              onPressed: () => Navigator.pop(sheetContext, 'account'),
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.purple,
-                minimumSize: const Size(0, 50),
-              ),
-              child: Text(
-                isGuest ? 'Create free account' : 'Sign in / Create account',
-                style: const TextStyle(fontWeight: FontWeight.w800),
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextButton(
-              onPressed: () => Navigator.pop(sheetContext, null),
-              child: const Text('Not now'),
-            ),
-          ],
-        ),
+    builder: (dialogContext) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      title: Row(
+        children: [
+          const Icon(Icons.lock_rounded, color: AppColors.purple),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(effectiveTitle,
+                style: const TextStyle(fontWeight: FontWeight.w800)),
+          ),
+        ],
       ),
+      content: Text(effectiveMessage,
+          style: const TextStyle(height: 1.45, fontSize: 14)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text('Not now', style: TextStyle(color: Colors.grey)),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(dialogContext, 'account'),
+          style: FilledButton.styleFrom(backgroundColor: AppColors.purple),
+          icon: const Icon(Icons.login_rounded, size: 18),
+          label: Text(
+            isGuest ? 'Create free account' : 'Sign in',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
+      ],
     ),
   );
 

@@ -14,6 +14,7 @@ import 'package:picture_match/screens/store_screen.dart';
 import '../theme/app_theme.dart';
 import 'contest_screen.dart';
 import 'level_selection_screen.dart';
+import '../core/login_gate.dart';
 import 'notifications_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -85,11 +86,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
   int _furthestLevel(String category) {
     final u = game.unlockedLevelsFor(category);
+    // Guests have an EMPTY unlock set for sign-in-only worlds — guard so the
+    // continue card never crashes on a reduce over nothing.
+    if (u.isEmpty) return 0;
     return u.reduce((a, b) => a > b ? a : b);
   }
 
   // ---- Actions ----------------------------------------------------------
   Future<void> _openCategory(String category) async {
+    // Guests watch a rewarded interstitial as their "ticket" to play; when
+    // no ad fills, they continue anyway so the flow never gets stuck.
+    if (game.isGuestLike) {
+      await AdsService.instance.showRewardedInterstitial(
+        onDone: () => _enterCategory(category),
+      );
+      if (mounted) setState(() {});
+      return;
+    }
+    _enterCategory(category);
+  }
+
+  Future<void> _enterCategory(String category) async {
     game.setLastCategory(category);
 
     await Navigator.push<void>(
@@ -147,7 +164,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Text(
                 'Did you miss a day or want to protect and extend your streak? '
                 'You can repair your streak for $cost coins — but only if it '
-                'broke within the last 7 days.',
+                'broke within the last ${game.streakRepairMaxDays} days.',
                 style: const TextStyle(fontSize: 14, color: Color(0xFF6B7280), height: 1.4),
               ),
               const SizedBox(height: 14),
@@ -308,19 +325,39 @@ class _HomeScreenState extends State<HomeScreen> {
             unlockedCount: (game.unlocked[entry.key] ?? {0}).length,
             totalLevels: _levelsFor(entry.key).length,
             isUnlocked: _isWorldUnlocked(entry.key), // Pass lock status
-            onTap: _isWorldUnlocked(entry.key)
-                ? () => _openCategory(entry.key)
-                : () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Complete all levels in the previous world to unlock!')),
-                    );
-                  },
+            onTap: !_isWorldUnlocked(entry.key)
+                ? () {
+                    if (game.guestWorldLocked(entry.key)) {
+                      // Guest: the whole world is sign-in only.
+                      _showGuestWorldDialog(entry.key);
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Complete all levels in the previous world to unlock!')),
+                      );
+                    }
+                  }
+                : () => _openCategory(entry.key),
           ),
           const SizedBox(height: 14),
           ],
         ],
       ),
     );
+  }
+
+  /// Guest tapped a sign-in-only world — explain what they're missing
+  /// (consistent "Sign in to unlock" modal).
+  Future<void> _showGuestWorldDialog(String category) async {
+    final info = _worlds[category];
+    await ensureSignedIn(
+      context,
+      title: 'Sign in to unlock',
+      message:
+          '${info?.title ?? 'This world'} is part of the full game. Sign in to '
+          'unlock every world and level, battles with friends, leaderboards, '
+          'achievements and daily rewards.',
+    );
+    if (mounted) setState(() {});
   }
 
   // Top bar: streak + coins on the left, trophy on the right.
@@ -857,15 +894,17 @@ class _ContestBanner extends StatelessWidget {
       builder: (context, _) {
         if (!game.contestEnabled) return const SizedBox.shrink();
         return GestureDetector(
-          onTap: () {
-            if (!game.isLoggedIn) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Sign in to join the bi-weekly contest!'),
-                  behavior: SnackBarBehavior.floating,
-                ),
+          onTap: () async {
+            if (game.isGuestLike) {
+              final signedIn = await ensureSignedIn(
+                context,
+                title: 'Sign in to unlock',
+                message:
+                    'The bi-weekly contest is for signed-in players — top 10 '
+                    'players every two weeks battle in knockout matches for a '
+                    'cash prize. Sign in to qualify and compete!',
               );
-              return;
+              if (!signedIn || !context.mounted) return;
             }
             Navigator.push(
               context,

@@ -70,6 +70,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 'isMe': e['isMe'] as bool? ?? false,
                 'userId': e['userId'] as String?,
               })
+          .take(10)
           .toList();
       if (mounted) {
         setState(() {
@@ -86,10 +87,21 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     }
   }
 
-  /// Discovery: add a player from the leaderboard as a friend.
+  /// Discovery: add a player from the leaderboard as a friend. Guests are
+  /// routed through the consistent sign-in modal first.
   Future<void> _addFriend(Map<String, dynamic> player) async {
     final userId = player['userId'] as String?;
     if (userId == null) return;
+    if (GameData.instance.isGuestLike) {
+      final signedIn = await ensureSignedIn(
+        context,
+        title: 'Sign in to unlock',
+        message:
+            'Friends are for signed-in players — add the people you meet in '
+            'battles and on the leaderboard, then challenge them anytime!',
+      );
+      if (!signedIn || !mounted) return;
+    }
     try {
       final json = await ApiClient.instance.sendFriendRequest(userId);
       final result = json['result'] as String? ?? 'sent';

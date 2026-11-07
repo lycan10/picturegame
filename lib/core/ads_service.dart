@@ -397,7 +397,7 @@ class AdsService with WidgetsBindingObserver {
 
   /// Dart-side factory id — must match the platform ad factories registered
   /// in MainActivity.kt (Android) and AppDelegate.swift (iOS).
-  static const String nativeAdFactoryId = 'adFactoryExample';
+  static const String nativeAdFactoryId = 'picturegames_native';
 }
 
 /// Self-managing AdMob Native Advanced ad: loads on first layout, collapses to
@@ -416,66 +416,84 @@ class _NativeAdWidgetState extends State<NativeAdWidget> {
   int _attempts = 0;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_ad == null) _load();
-  }
-
-  Future<void> _load() async {
-    if (!AdsService.instance.isSupported) return;
-    final ad = NativeAd(
+  void initState() {
+    super.initState();
+    final NativeAd ad = NativeAd(
       adUnitId: AdsService.instance.nativeAdUnitId,
       factoryId: AdsService.nativeAdFactoryId,
       request: const AdRequest(),
       listener: NativeAdListener(
-        onAdLoaded: (ad) {
+        onAdLoaded: (Ad ad) {
           debugPrint('[ads] native loaded');
           if (mounted) setState(() => _loaded = true);
         },
-        onAdFailedToLoad: (ad, error) {
+        onAdFailedToLoad: (Ad ad, LoadAdError error) {
+          // code 0 = no fill (unit OK, no demand); code 1/3 point at the unit
+          // id or the unit's TYPE in the AdMob console — a Banner unit cannot
+          // serve native ads and always returns no-fill.
+          debugPrint(
+              '[ads] native failed: code ${error.code} ${error.domain}: ${error.message}');
           ad.dispose();
-          _handleNativeLoadFailure('${error.code}', error.message);
+          _ad = null;
+          // Retry a few times with backoff — factory warm-up and transient
+          // no-fill both resolve on later attempts.
+          _attempts += 1;
+          if (_attempts <= 3 && mounted) {
+            Future<void>.delayed(Duration(seconds: 10 * _attempts), () {
+              if (mounted && !_loaded) _load();
+            });
+          }
         },
       ),
     );
-    setState(() => _ad = ad);
-    try {
-      await ad.load();
-    } on PlatformException catch (e) {
-      // The platform channel itself can fail (e.g. the native factory wasn't
-      // registered yet) — this must never escape as an uncaught error.
-      _handleNativeLoadFailure(e.code, e.message ?? 'platform error');
-    } catch (e) {
-      _handleNativeLoadFailure('unknown', e.toString());
-    }
+    _ad = ad;
+    // Never let an ad failure (tests, offline, uncreated ad unit) crash the
+    // host screen.
+    ad.load().catchError((Object _) {});
   }
 
-  void _handleNativeLoadFailure(String code, String message) {
-    debugPrint('[ads] native failed to load: code=$code $message');
-    _attempts += 1;
-    if (_ad case final staleAd?) {
-      staleAd.dispose();
-      _ad = null;
-    }
-    // First-load failures happen (factory warm-up, no fill) — retry a few
-    // times with backoff instead of collapsing forever.
-    if (_attempts <= 3 && mounted) {
-      Future<void>.delayed(Duration(seconds: 10 * _attempts), () {
-        if (mounted && !_loaded) _load();
-      });
-    }
+  void _load() {
+    if (!AdsService.instance.isSupported) return;
+    final NativeAd ad = NativeAd(
+      adUnitId: AdsService.instance.nativeAdUnitId,
+      factoryId: AdsService.nativeAdFactoryId,
+      request: const AdRequest(),
+      listener: NativeAdListener(
+        onAdLoaded: (Ad ad) {
+          debugPrint('[ads] native loaded');
+          if (mounted) setState(() => _loaded = true);
+        },
+        onAdFailedToLoad: (Ad ad, LoadAdError error) {
+          debugPrint(
+              '[ads] native failed: code ${error.code} ${error.domain}: ${error.message}');
+          ad.dispose();
+          _ad = null;
+          _attempts += 1;
+          if (_attempts <= 3 && mounted) {
+            Future<void>.delayed(Duration(seconds: 10 * _attempts), () {
+              if (mounted && !_loaded) _load();
+            });
+          }
+        },
+      ),
+    );
+    _ad = ad;
+    ad.load().catchError((Object _) {});
   }
 
   @override
   void dispose() {
     _ad?.dispose();
+    _ad = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final ad = _ad;
-    if (ad == null || !_loaded) return const SizedBox.shrink();
+    final NativeAd? ad = _ad;
+    if (!_loaded || ad == null) {
+      return const SizedBox.shrink();
+    }
     return SafeArea(
       top: false,
       child: Container(
@@ -486,8 +504,9 @@ class _NativeAdWidgetState extends State<NativeAdWidget> {
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: const Color(0xFFEDEEF4)),
         ),
-        // Bounded box: the platform factory renders inside it.
-        constraints: const BoxConstraints(minHeight: 280),
+        // Bounded box: the platform factory renders inside it. The native
+        // template (headline + media + body + CTA) needs ~250-280 logical px.
+        height: 280,
         child: AdWidget(ad: ad),
       ),
     );

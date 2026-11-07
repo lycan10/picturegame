@@ -169,6 +169,7 @@ class GameData extends ChangeNotifier {
   int get timeBoostCostCoins => _cfgInt('time_boost_cost_coins', 100);
   int get timeBoostSeconds => _cfgInt('time_boost_seconds', 15);
   int get streakRepairCost => _cfgInt('streak_repair_cost', 300);
+  int get streakRepairMaxDays => _cfgInt('streak_repair_max_days', 3);
   int get dailyGoal => _cfgInt('daily_goal', 3);
   bool get contestEnabled => remoteConfig['contest_enabled'] is bool
       ? remoteConfig['contest_enabled'] as bool
@@ -549,11 +550,17 @@ class GameData extends ChangeNotifier {
   // =========================================================================
 
   // ---- Guest free sample -----------------------------------------------------
-  // Guests can play the first `guestFreeLevels` levels of the first world;
-  // everything else is locked until they sign in. Mirrored server-side in the
-  // sync route so tweaked clients can't bypass it.
+  // Players WITHOUT a signed-in account (no session at all) and logged-in
+  // guest accounts are both "guests": they can play the first
+  // `guestFreeLevels` levels of the first world; everything else is locked
+  // until they sign in. Mirrored server-side in the sync route so tweaked
+  // clients can't bypass it (guest accounts; fully offline players simply
+  // never sync).
 
-  bool get _isGuestAccount => isGuest;
+  /// True for anyone who hasn't authenticated with a real account.
+  bool get isGuestLike => !isLoggedIn || isGuest;
+
+  bool get _isGuestAccount => isGuestLike;
 
   /// Whether THIS account may play [levelIndex] of [category].
   bool canPlayLevel(String category, int levelIndex) {

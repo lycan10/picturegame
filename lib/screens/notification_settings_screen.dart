@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/game_data.dart';
 import '../core/notification_service.dart';
 import '../theme/app_theme.dart';
 
@@ -17,14 +18,15 @@ class NotificationSettingsScreen extends StatefulWidget {
 
 class _NotificationSettingsScreenState
     extends State<NotificationSettingsScreen> {
-  static const _kEnabled = 'notif_daily_enabled';
-  static const _kHour = 'notif_daily_hour';
-  static const _kMinute = 'notif_daily_minute';
+  static const _kEnabled = NotificationService.reminderEnabledKey;
+  static const _kHour = NotificationService.reminderHourKey;
+  static const _kMinute = NotificationService.reminderMinuteKey;
 
   bool _enabled = false;
   int _hour = 19;
   int _minute = 0;
   bool _busy = false;
+  bool _scheduled = false;
 
   @override
   void initState() {
@@ -34,12 +36,17 @@ class _NotificationSettingsScreenState
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
+    await NotificationService.instance.refreshReminderState();
     if (!mounted) return;
     setState(() {
       _enabled = prefs.getBool(_kEnabled) ?? false;
       _hour = prefs.getInt(_kHour) ?? 19;
       _minute = prefs.getInt(_kMinute) ?? 0;
     });
+    final scheduled =
+        await NotificationService.instance.pendingScheduledCount();
+    if (!mounted) return;
+    setState(() => _scheduled = _enabled && scheduled > 0);
   }
 
   String get _timeLabel =>
@@ -66,6 +73,7 @@ class _NotificationSettingsScreenState
         await NotificationService.instance.scheduleDailyReminder(
           hour: _hour,
           minute: _minute,
+          streakDays: GameData.instance.streakDays,
         );
       } else {
         await NotificationService.instance.cancelDailyReminder();
@@ -73,6 +81,7 @@ class _NotificationSettingsScreenState
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_kEnabled, enabled);
+      await NotificationService.instance.refreshReminderState();
       if (!mounted) return;
       setState(() => _enabled = enabled);
     } finally {
@@ -96,12 +105,22 @@ class _NotificationSettingsScreenState
     await prefs.setInt(_kMinute, _minute);
 
     if (_enabled) {
-      await NotificationService.instance
-          .scheduleDailyReminder(hour: _hour, minute: _minute);
+      await NotificationService.instance.scheduleDailyReminder(
+        hour: _hour,
+        minute: _minute,
+        streakDays: GameData.instance.streakDays,
+      );
+      await NotificationService.instance.refreshReminderState();
       if (mounted) {
+        final scheduled =
+            await NotificationService.instance.pendingScheduledCount();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           behavior: SnackBarBehavior.floating,
-          content: Text('Daily reminder moved to $_timeLabel.'),
+          content: Text(
+            scheduled > 0
+                ? 'Daily reminder moved to $_timeLabel — scheduled ✓'
+                : 'Daily reminder moved to $_timeLabel.',
+          ),
         ));
       }
     }
@@ -162,8 +181,11 @@ class _NotificationSettingsScreenState
                     title: const Text('Reminder time',
                         style: TextStyle(
                             fontSize: 14, fontWeight: FontWeight.w700)),
-                    subtitle: const Text('Local time on this device',
-                        style: TextStyle(fontSize: 11)),
+                    subtitle: Text(
+                        _scheduled
+                            ? 'Scheduled ✓ — fires even when the app is closed'
+                            : 'Local time on this device',
+                        style: const TextStyle(fontSize: 11)),
                     trailing: Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 6),

@@ -51,19 +51,17 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyATuFVEU2CqP8xcGIXdn6jPVKRC716K-js',
-    appId: '1:457768377190:android:9c904d860bc84eab72c6a7',
+    appId: '1:457768377190:android:0d065a3874c88ccf72c6a7',
     messagingSenderId: '457768377190',
     projectId: 'picture-game-b658f',
     storageBucket: 'picture-game-b658f.firebasestorage.app',
   );
-
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyCEE49zNC1cTc8YsMNeDn7oaYGLmdpj370',
-    appId: '1:457768377190:ios:f979f5dc540a41c572c6a7',
+    appId: '1:457768377190:ios:8f0c6c83b99b381c72c6a7',
     messagingSenderId: '457768377190',
     projectId: 'picture-game-b658f',
     storageBucket: 'picture-game-b658f.firebasestorage.app',
-    iosBundleId: 'com.example.pictureMatch',
+    iosBundleId: 'com.lycan.buzzer',
   );
 }
-

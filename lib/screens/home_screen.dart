@@ -56,6 +56,9 @@ class _HomeScreenState extends State<HomeScreen> {
       game.isWorldUnlocked(category) && !game.guestWorldLocked(category);
 
   // ---- Category metadata -----------------------------------------------
+  // Bundled fallbacks for the two built-in worlds (first run / offline before
+  // any manifest). The LIVE list is server-driven: GameData.worldKeys is
+  // replaced by every content manifest, so admin-added worlds render here.
   static const _worlds = <String, _WorldInfo>{
     'animals': _WorldInfo(
       emoji: '🦁',
@@ -72,6 +75,29 @@ class _HomeScreenState extends State<HomeScreen> {
       accent: Color(0xFF3F6BE0),
     ),
   };
+
+  /// Display info for a world: manifest metadata when available, the bundled
+  /// card otherwise, and a neutral placeholder for worlds with neither.
+  _WorldInfo _infoFor(String category) {
+    final meta = game.worldMeta[category];
+    if (meta != null) {
+      return _WorldInfo(
+        emoji: meta.emoji,
+        title: meta.title,
+        subtitle: meta.subtitle,
+        tint: Color(meta.tint),
+        accent: Color(meta.accent),
+      );
+    }
+    return _worlds[category] ??
+        _WorldInfo(
+          emoji: '🧩',
+          title: category,
+          subtitle: 'A brand-new world',
+          tint: const Color(0xFFF3EFFF),
+          accent: AppColors.purple,
+        );
+  }
 
   int get selectedIndex => _selectedIndex;
   int _selectedIndex = 0;
@@ -317,26 +343,26 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(height: 14),
-        for (final entry in _worlds.entries) ...[
+        for (final key in game.worldKeys) ...[
           _WorldCard(
-            info: entry.value,
-            starsEarned: _starsEarned(entry.key),
-            maxStars: _maxStars(entry.key),
-            unlockedCount: (game.unlocked[entry.key] ?? {0}).length,
-            totalLevels: _levelsFor(entry.key).length,
-            isUnlocked: _isWorldUnlocked(entry.key), // Pass lock status
-            onTap: !_isWorldUnlocked(entry.key)
+            info: _infoFor(key),
+            starsEarned: _starsEarned(key),
+            maxStars: _maxStars(key),
+            unlockedCount: (game.unlocked[key] ?? {0}).length,
+            totalLevels: _levelsFor(key).length,
+            isUnlocked: _isWorldUnlocked(key), // Pass lock status
+            onTap: !_isWorldUnlocked(key)
                 ? () {
-                    if (game.guestWorldLocked(entry.key)) {
+                    if (game.guestWorldLocked(key)) {
                       // Guest: the whole world is sign-in only.
-                      _showGuestWorldDialog(entry.key);
+                      _showGuestWorldDialog(key);
                     } else {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Complete all levels in the previous world to unlock!')),
                       );
                     }
                   }
-                : () => _openCategory(entry.key),
+                : () => _openCategory(key),
           ),
           const SizedBox(height: 14),
           ],
@@ -348,12 +374,12 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Guest tapped a sign-in-only world — explain what they're missing
   /// (consistent "Sign in to unlock" modal).
   Future<void> _showGuestWorldDialog(String category) async {
-    final info = _worlds[category];
+    final info = _infoFor(category);
     await ensureSignedIn(
       context,
       title: 'Sign in to unlock',
       message:
-          '${info?.title ?? 'This world'} is part of the full game. Sign in to '
+          '${info.title} is part of the full game. Sign in to '
           'unlock every world and level, battles with friends, leaderboards, '
           'achievements and daily rewards.',
     );
@@ -467,7 +493,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Single, obvious primary action: resume where the player left off.
   Widget _buildContinueCard() {
-    final info = _worlds[game.lastCategory]!;
+    final info = _infoFor(game.lastCategory);
     final levels = _levelsFor(game.lastCategory);
     final level = _furthestLevel(game.lastCategory);
     final hasStarted = (game.bestStars[game.lastCategory] ?? {}).isNotEmpty;

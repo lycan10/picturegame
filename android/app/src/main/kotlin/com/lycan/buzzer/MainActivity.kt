@@ -1,4 +1,4 @@
-package com.example.picture_match
+package com.lycan.buzzer
 
 import io.flutter.embedding.android.FlutterActivity
 

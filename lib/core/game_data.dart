@@ -115,7 +115,16 @@ class GameData extends ChangeNotifier {
   int streakDays = 0;
   int levelsToday = 0;
   static const int maxStarsPerLevel = 3;
-  final List<String> worldKeys = ['animals', 'countries'];
+
+  // World list is SERVER-DRIVEN: replaced whenever a content manifest
+  // arrives (cache load or refresh), ordered by the admin's sort_order.
+  // The bundled defaults cover first-run/offline before any manifest.
+  // NEVER iterate a hardcoded world list in UI — use this + worldMeta.
+  List<String> worldKeys = ['animals', 'countries'];
+
+  /// Display metadata (title, emoji, colors) per world from the manifest;
+  /// absent entries fall back to the bundled world cards on the home screen.
+  Map<String, WorldMeta> worldMeta = {};
 
   String lastCategory = 'animals';
   final Map<String, Set<int>> unlocked = {
@@ -209,6 +218,11 @@ class GameData extends ChangeNotifier {
   // ---- Notification inbox (server-synced) -----------------------------------
   List<Map<String, dynamic>> notifications = [];
   int unreadNotifications = 0;
+
+  // The id of the newest notification already surfaced as a local
+  // notification. PERSISTED — an in-memory value resets on every launch,
+  // which re-showed the newest UNREAD item (even weeks old) each app open.
+  static const _lastLocalNotifiedKey = 'notif_last_local_id';
   String? _lastLocalNotifiedId;
 
   /// Surfaces a brand-new server notification as an instant local
@@ -233,6 +247,7 @@ class GameData extends ChangeNotifier {
             body: newest['body'] as String? ?? '',
           ),
         );
+        unawaited(_store.setJson(_lastLocalNotifiedKey, {'id': id}));
       }
     }
   }
@@ -295,7 +310,29 @@ class GameData extends ChangeNotifier {
     _initialized = true;
 
     await _loadLocal();
+    // Survives restarts so an old unread inbox item isn't re-shown as a
+    // fresh local notification on every app open.
+    _lastLocalNotifiedId =
+        (await _store.getJson(_lastLocalNotifiedKey))['id'] as String?;
+    // Battle lives auto-refill is a per-device user preference (toggle in
+    // Profile → settings); the refill itself is server-validated per buy.
+    battleAutoRefill =
+        (await _store.getJson(_kBattleAutoRefillKey))['enabled'] as bool? ?? false;
     await trySync();
+  }
+
+  // ---- Battle settings -------------------------------------------------------
+
+  /// Auto-refill battle lives: when on, a player who drops to 1 life in an
+  /// active battle automatically buys a life back with coins (while they can
+  /// afford it). Enforced client-side; the server re-validates every buy.
+  bool battleAutoRefill = false;
+  static const _kBattleAutoRefillKey = 'battle_auto_refill';
+
+  Future<void> setBattleAutoRefill(bool enabled) async {
+    battleAutoRefill = enabled;
+    await _store.setJson(_kBattleAutoRefillKey, {'enabled': enabled});
+    notifyListeners();
   }
 
   Future<void> _loadLocal() async {
@@ -332,7 +369,7 @@ class GameData extends ChangeNotifier {
     final content = await _store.content;
     final loaded = _parseContent(content);
     if (loaded != null) {
-      _content = loaded;
+      _applyParsedManifest(loaded);
       contentVersion = content['version'] as int? ?? 0;
       _rederiveUnlocks();
     }
@@ -446,10 +483,13 @@ class GameData extends ChangeNotifier {
         final world = row['world'] as String;
         final idx = row['levelIndex'] as int;
         final stars = row['bestStars'] as int;
-        bestStars[world]![idx] = max(bestStars[world]![idx] ?? 0, stars);
+        // The server may report progress for a world this client hasn't
+        // seen yet (admin-added, manifest not refreshed) — grow the maps
+        // instead of crashing on the `!`.
+        (bestStars[world] ??= {})[idx] = max(bestStars[world]![idx] ?? 0, stars);
         // Completing a level unlocks the one after it (if it exists).
         if (stars > 0 && idx + 1 < (_content[world]?.length ?? 0)) {
-          unlocked[world]?.add(idx + 1);
+          (unlocked[world] ??= {0}).add(idx + 1);
         }
       }
       // First level of every world is always unlocked.
@@ -509,7 +549,7 @@ class GameData extends ChangeNotifier {
       final manifest = await _api.contentManifest();
       final parsed = _parseContent(manifest);
       if (parsed != null) {
-        _content = parsed;
+        _applyParsedManifest(parsed);
         contentVersion = manifest['version'] as int;
         _rederiveUnlocks();
         await _store.saveContent(manifest);
@@ -520,7 +560,21 @@ class GameData extends ChangeNotifier {
     }
   }
 
-  Map<String, List<GameLevel>>? _parseContent(Map<String, dynamic> manifest) =>
+  /// Swaps in a freshly parsed manifest: level lists, the server-ordered
+  /// world list and per-world display metadata. New admin-added worlds appear
+  /// (and removed worlds disappear) here — every UI surface iterates
+  /// [worldKeys], never a hardcoded list.
+  void _applyParsedManifest(ParsedContentManifest parsed) {
+    _content = parsed.levels;
+    worldKeys = parsed.orderedWorldKeys;
+    worldMeta = parsed.worlds;
+    // lastCategory may point at a world the admin removed.
+    if (!worldKeys.contains(lastCategory)) {
+      lastCategory = worldKeys.first;
+    }
+  }
+
+  ParsedContentManifest? _parseContent(Map<String, dynamic> manifest) =>
       parseContentManifest(manifest);
 
   /// Re-derives unlock state from best stars. Essential when the level list

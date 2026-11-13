@@ -826,6 +826,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           ),
           _divider(),
+          Builder(builder: (_) {
+            final cost = game.battleLifeRefillCost;
+            return _accountTile(
+              icon: Icons.favorite_rounded,
+              color: Colors.redAccent,
+              title: 'Auto-refill battle lives',
+              subtitle: game.battleAutoRefill
+                  ? 'ON — a life is bought automatically for '
+                      '${formatCount(cost)} 🪙 when you drop to 1 in a battle'
+                  : 'OFF — never lose a battle to empty lives while you have coins',
+              trailing: Switch(
+                value: game.battleAutoRefill,
+                activeThumbColor: Colors.redAccent,
+                onChanged: (v) => game.setBattleAutoRefill(v),
+              ),
+              onTap: () => game.setBattleAutoRefill(!game.battleAutoRefill),
+            );
+          }),
+          _divider(),
           _accountTile(
             icon: Icons.people_alt_rounded,
             title: 'Friends',
@@ -910,6 +929,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String subtitle,
     required VoidCallback onTap,
     Color color = AppColors.purple,
+    Widget? trailing,
   }) {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(vertical: 5),
@@ -941,10 +961,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ),
       ),
-      trailing: const Icon(
-        Icons.chevron_right_rounded,
-        color: Colors.grey,
-      ),
+      trailing: trailing ??
+          const Icon(
+            Icons.chevron_right_rounded,
+            color: Colors.grey,
+          ),
       onTap: onTap,
     );
   }

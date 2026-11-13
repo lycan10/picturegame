@@ -49,15 +49,17 @@ class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
       title: 'Sign in to unlock',
       message:
           'You are playing as a guest — the first ${game.guestFreeLevels} levels '
-          'of ${widget.category == 'countries' ? 'Flags of the World' : 'Animal Kingdom'} '
+          'of ${game.worldMeta[widget.category]?.title ?? title} '
           'are free.\n\nSign in to unlock ALL levels and worlds, battles with friends, '
           'leaderboards, achievements and daily rewards.',
     );
     if (mounted) setState(() {});
   }
 
+  // Server-driven world title (manifest metadata), bundled fallback otherwise.
   String get title =>
-      widget.category == 'animals' ? 'Animal Kingdom' : 'Flags of the World';
+      game.worldMeta[widget.category]?.title ??
+      (widget.category == 'countries' ? 'Flags of the World' : 'Animal Kingdom');
 
   Future<void> _openLevel(int index) async {
     // Server-enforced too; this guard keeps the UI honest.

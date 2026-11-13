@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,15 +10,21 @@ import '../core/formatters.dart';
 import '../core/game_data.dart';
 import '../core/sound_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/word_chip.dart';
 import 'store_screen.dart';
 
-/// Live 1v1 battle: match the picture to the correct word before the 30s
-/// timer runs out. A wrong answer or timeout costs a heart; last player
-/// standing wins.
+/// Live 1v1 battle: a PvP replica of the single-player match game. Each round
+/// shows N picture boxes (round 1 → 2, growing with the round number, capped
+/// at 8) and both players drag word chips onto them. Fully matching a round
+/// costs nothing; timing out with boxes left unmatched costs a heart. Last
+/// player standing wins.
 ///
 /// The screen is a thin client over the poll-based battle engine: it submits
-/// answers and re-reads the authoritative server state every 2s, so both
-/// players converge on the same rounds without WebSockets.
+/// matches and re-reads the authoritative server state every 2s, so both
+/// players converge on the same rounds without WebSockets. The word→picture
+/// mapping is never sent to the client before the round resolves — words
+/// travel only in the shuffled `chips` list, so local drops are optimistic
+/// and the server response (corrects or confirms) drives the feedback.
 class BattleGameScreen extends StatefulWidget {
   final String code;
 
@@ -29,7 +36,6 @@ class BattleGameScreen extends StatefulWidget {
 
 class _BattleGameScreenState extends State<BattleGameScreen> {
   static const _pollInterval = Duration(seconds: 2);
-  static const _roundSeconds = 15;
 
   Map<String, dynamic>? _state;
   bool _loading = true;
@@ -37,20 +43,18 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
   bool _offline = false;
   String? _fatal;
 
-  String? _selected;
+  String? _selectedWord; // chip selected via tap (tap-to-match companion)
   String? _feedback;
   bool _feedbackGood = false;
   int _lastRoundNo = 0;
 
-  // Hint state, per round. The clue sentence is NOT free in battles: the
-  // round payload carries it, but we only surface it after the player spends
-  // a hint. All spends go through GameData.useHint() (balance-checked and
-  // server-validated on sync).
-  bool _hintClueRevealed = false;
-  String? _hintEliminated; // a wrong option removed this round
-  bool _hintNudgeUsed = false; // nudge purchased this round
-  String? _nudgeFirstLetter; // from the server (word is hidden pre-answer)
-  int? _nudgeLength;
+  // Per-round match state, mirroring the match screen. Local optimistic
+  // matches lead; the poll's authoritative `matchedByMe` is unioned in.
+  final Set<String> _myMatches = {}; // item ids matched by me
+  final Map<String, String> _placedWords = {}; // itemId -> placed word
+  String? _wrongTargetId; // triggers a shake/flash on a wrong drop
+  String? _hintTarget; // box highlighted by clue/nudge
+  bool _hintUsedThisRound = false;
 
   Timer? _pollTimer;
   Timer? _tickTimer;
@@ -59,6 +63,26 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
 
   Map<String, dynamic>? get _round =>
       _state?['round'] as Map<String, dynamic>?;
+
+  List<Map<String, dynamic>> get _roundItems =>
+      ((_round?['items'] as List?) ?? [])
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+
+  List<String> get _chips =>
+      (_round?['chips'] as List?)?.cast<String>() ?? const [];
+
+  /// Chips still in the tray: every word has exactly one box, so a placed
+  /// word removes its chip.
+  List<String> get _remainingChips => _chips
+      .where((w) => !_placedWords.containsValue(w))
+      .toList();
+
+  int get _itemTotal =>
+      (_round?['itemTotal'] as num?)?.toInt() ?? _roundItems.length;
+
+  bool get _matchedAll => _myMatches.length >= _itemTotal && _itemTotal > 0;
 
   Map<String, dynamic>? get _me {
     final state = _state;
@@ -84,7 +108,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     return DateTime.parse(expiresAt).difference(DateTime.now());
   }
 
-  bool get _iAnswered => _round?['answeredByMe'] as bool? ?? true;
+  bool get _timedOut => _remaining <= Duration.zero;
 
   @override
   void initState() {
@@ -98,7 +122,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
       const Duration(milliseconds: 500),
       (_) {
         // Re-render only while a live countdown is on screen.
-        if (mounted && !_iAnswered && _remaining > Duration.zero) {
+        if (mounted && !_matchedAll && !_timedOut) {
           setState(() {});
         }
       },
@@ -139,7 +163,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     }
   }
 
-  void _applyState(Map<String, dynamic> json, {bool fromAnswer = false}) {
+  void _applyState(Map<String, dynamic> json, {bool fromMatch = false}) {
     final round = json['round'] as Map<String, dynamic>?;
     final no = (round?['no'] as num?)?.toInt() ?? 0;
 
@@ -151,28 +175,34 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
 
       if (no != _lastRoundNo) {
         _lastRoundNo = no;
-        _selected = null;
+        _selectedWord = null;
         _feedback = null;
-        _hintClueRevealed = false;
-        _hintEliminated = null;
-        _hintNudgeUsed = false;
-        _nudgeFirstLetter = null;
-        _nudgeLength = null;
+        _wrongTargetId = null;
+        _hintTarget = null;
+        _hintUsedThisRound = false;
+        _myMatches.clear();
+        _placedWords.clear();
       }
 
-      if (fromAnswer && round != null) {
-        final my = (round['myAnswerCorrect'] as num?)?.toInt();
-        if (my == 1) {
-          _feedback = '✨ Correct! +${formatCount(GameData.instance.battleAnswerPoints)} points';
+      // Union the authoritative match list — covers desyncs after reconnects
+      // without clobbering in-flight optimistic matches.
+      _myMatches.addAll(
+        ((round?['matchedByMe'] as List?) ?? []).cast<String>(),
+      );
+
+      if (fromMatch) {
+        if (json['matched'] == true) {
+          _feedback =
+              '✨ Perfect match! +${formatCount(GameData.instance.battleAnswerPoints)} pts';
           _feedbackGood = true;
-          HapticFeedback.mediumImpact();
-        } else if (my == 0) {
-          _feedback = '❌ Wrong! You lost a heart';
+        } else {
+          _feedback = '❌ Not a match — try another box!';
           _feedbackGood = false;
-          HapticFeedback.heavyImpact();
         }
       }
     });
+
+    unawaited(_maybeAutoRefill());
 
     final status = json['status'] as String?;
     if (status == 'finished' || status == 'expired') {
@@ -186,28 +216,43 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     }
   }
 
-  Future<void> _answer(String choice) async {
+  /// Drop (or tap-match) a word chip onto a picture box. The server is the
+  /// only judge — the client never knows the mapping — so every drop is
+  /// submitted and the response drives success/wrong feedback. Wrong drops
+  /// are shake-only; lives are lost solely via the round timeout.
+  Future<void> _submitMatch(String itemId, String word) async {
     final round = _round;
-    if (round == null || _submitting || _iAnswered) return;
-    if (_remaining <= Duration.zero) return;
+    if (round == null || _submitting || _timedOut || _matchedAll) return;
+    if (_myMatches.contains(itemId)) return;
+    if (!_remainingChips.contains(word)) return;
 
     final no = (round['no'] as num).toInt();
     setState(() {
       _submitting = true;
-      _selected = choice;
+      _selectedWord = null;
     });
 
     try {
       final json =
-          await ApiClient.instance.answerBattle(widget.code, no, choice);
+          await ApiClient.instance.battleMatch(widget.code, no, itemId, word);
       if (!mounted) return;
-      _applyState(json, fromAnswer: true);
+      _applyState(json, fromMatch: true);
+      if (json['matched'] == true) {
+        setState(() {
+          _placedWords[itemId] = word;
+          _myMatches.add(itemId);
+          _wrongTargetId = null;
+        });
+        HapticFeedback.mediumImpact();
+        playSfx(Sfx.success);
+      } else {
+        setState(() => _wrongTargetId = itemId);
+        HapticFeedback.heavyImpact();
+        playSfx(Sfx.wrong);
+      }
     } on ApiException catch (err) {
       if (!mounted) return;
-      setState(() {
-        _selected = null;
-        _submitting = false;
-      });
+      setState(() => _submitting = false);
       if ((err.message).contains('timed out')) {
         setState(() => _feedback = '⏱ Too slow — you lost a heart');
       } else {
@@ -370,14 +415,16 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
         _buildPlayersBar(),
         Expanded(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
             child: Column(
               children: [
-                _buildPictureCard(round),
+                _buildProgressHeader(),
+                const SizedBox(height: 12),
+                _buildMatchGrid(),
                 const SizedBox(height: 16),
                 _buildTimerBar(),
                 const SizedBox(height: 20),
-                _buildOptions(round),
+                _buildChipTray(),
                 const SizedBox(height: 16),
                 _buildFeedback(round),
               ],
@@ -391,12 +438,13 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
 
   // ---- Hints ----------------------------------------------------------------
 
-  /// Same mechanics as the single-player hint sheet: each costs 1 hint from
-  /// the wallet, enforced through GameData.useHint() (server re-validates on
-  /// sync). Empty wallet opens the recovery dialog instead.
+  /// Same mechanics as the single-player hint sheet, minus "remove a wrong
+  /// option" (the tray holds exactly the round's words — there are no wrong
+  /// chips). Both hints target the player's first unmatched box, computed
+  /// server-side because the mapping is hidden until the round resolves.
   Future<void> _openHintSheet() async {
     final round = _round;
-    if (round == null || _iAnswered || _remaining <= Duration.zero) return;
+    if (round == null || _matchedAll || _timedOut || _hintUsedThisRound) return;
 
     if (GameData.instance.hints < 1) {
       _showOutOfHints();
@@ -456,7 +504,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
               ),
               const SizedBox(height: 6),
               const Text(
-                'Each hint costs 1 hint. They reset every round.',
+                'Each hint costs 1 hint and targets your first unmatched picture.',
                 style: TextStyle(fontSize: 12, color: Colors.black54),
               ),
               const SizedBox(height: 14),
@@ -465,17 +513,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                 kind: 'clue',
                 icon: Icons.visibility_rounded,
                 title: 'Reveal a clue',
-                subtitle: 'Show the clue sentence for this picture.',
-                used: _hintClueRevealed,
-              ),
-              const SizedBox(height: 10),
-              _hintOption(
-                sheetContext,
-                kind: 'remove',
-                icon: Icons.remove_circle_outline_rounded,
-                title: 'Remove a wrong option',
-                subtitle: 'Eliminate one wrong answer from the choices.',
-                used: _hintEliminated != null,
+                subtitle: 'Show the clue sentence for a difficult match.',
               ),
               const SizedBox(height: 10),
               _hintOption(
@@ -483,8 +521,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                 kind: 'nudge',
                 icon: Icons.lightbulb_circle_rounded,
                 title: 'Get a nudge',
-                subtitle: 'Reveal the first letter and word length.',
-                used: _hintNudgeUsed,
+                subtitle: 'Highlight a picture box without revealing the word.',
               ),
             ],
           ),
@@ -502,16 +539,13 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     required IconData icon,
     required String title,
     required String subtitle,
-    required bool used,
   }) {
     return Material(
-      color: used
-          ? Colors.grey.withValues(alpha: 0.12)
-          : AppColors.palePurple.withValues(alpha: 0.4),
+      color: AppColors.palePurple.withValues(alpha: 0.4),
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: used ? null : () => Navigator.pop(sheetContext, kind),
+        onTap: () => Navigator.pop(sheetContext, kind),
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(
@@ -524,9 +558,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(13),
                 ),
-                child: Icon(icon,
-                    size: 22,
-                    color: used ? Colors.grey : AppColors.purple),
+                child: Icon(icon, size: 22, color: AppColors.purple),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -535,10 +567,10 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                   children: [
                     Text(
                       title,
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w800,
-                        color: used ? Colors.grey : AppColors.ink,
+                        color: AppColors.ink,
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -552,15 +584,8 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                   ],
                 ),
               ),
-              if (used)
-                const Text('Used',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.grey))
-              else
-                const Icon(Icons.chevron_right_rounded,
-                    size: 18, color: AppColors.purple),
+              const Icon(Icons.chevron_right_rounded,
+                  size: 18, color: AppColors.purple),
             ],
           ),
         ),
@@ -569,19 +594,12 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
   }
 
   /// Server-enforced spend: the endpoint debits the wallet atomically (D1)
-  /// and computes the hint, because the correct word never reaches the
-  /// client before the round resolves. The local mirror is updated from the
-  /// server balance after every spend.
+  /// and picks the target box, because the word→picture mapping never reaches
+  /// the client before the round resolves. The local mirror is updated from
+  /// the server balance after every spend.
   Future<void> _spendHintAndApply(String kind) async {
     final round = _round;
     if (round == null || _submitting || !mounted) return;
-
-    final alreadyUsed = kind == 'clue'
-        ? _hintClueRevealed
-        : kind == 'remove'
-            ? _hintEliminated != null
-            : _hintNudgeUsed;
-    if (alreadyUsed) return;
 
     final no = (round['no'] as num).toInt();
     setState(() => _submitting = true);
@@ -591,18 +609,17 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
       if (json['hints'] != null) {
         GameData.instance.setHints(json['hints'] as int);
       }
+      final itemId = json['itemId'] as String?;
       setState(() {
         _submitting = false;
-        switch (kind) {
-          case 'clue':
-            _hintClueRevealed = true;
-          case 'remove':
-            _hintEliminated = json['remove'] as String?;
-          case 'nudge':
-            _nudgeFirstLetter = json['firstLetter'] as String?;
-            _nudgeLength = json['length'] as int?;
-            _hintNudgeUsed = true;
+        _hintUsedThisRound = true;
+        _hintTarget = itemId;
+        if (kind == 'clue' && json['hint'] != null) {
+          _feedback = '💡 Clue: ${json['hint']}';
+        } else {
+          _feedback = '🔍 Look closely at the highlighted picture.';
         }
+        _feedbackGood = false;
       });
     } on ApiException catch (err) {
       if (!mounted) return;
@@ -644,6 +661,53 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     }
   }
 
+  bool _autoRefilling = false;
+
+  /// Optional setting (Profile → "Auto-refill battle lives"): when on, a
+  /// player who drops to 1 life in an active battle automatically buys lives
+  /// back with coins instead of being eliminated. Buys 2 lives when the
+  /// balance covers both, 1 when it covers only one, nothing otherwise.
+  /// Mirrors the manual refill button's server rules (only fires at exactly
+  /// 1 life) — the server re-validates every buy, so a failed attempt just
+  /// falls back to the manual button.
+  Future<void> _maybeAutoRefill() async {
+    if (!GameData.instance.battleAutoRefill || _autoRefilling) return;
+    if ((_state?['status'] as String?) != 'active') return;
+    final me = _me;
+    if (me == null) return;
+    if ((me['lives'] as num?)?.toInt() != 1) return;
+    final refillCost = GameData.instance.battleLifeRefillCost;
+    final coins = GameData.instance.coins;
+    // Buy 2 when affordable, else 1, else nothing (no nagging).
+    final amount = coins >= refillCost * 2
+        ? 2
+        : coins >= refillCost
+            ? 1
+            : 0;
+    if (amount == 0) return;
+
+    _autoRefilling = true;
+    try {
+      final json =
+          await ApiClient.instance.battleRefillLife(widget.code, amount: amount);
+      if (!mounted) return;
+      if (json['coins'] != null) {
+        GameData.instance.setCoins(json['coins'] as int);
+      }
+      playSfx(Sfx.coin);
+      HapticFeedback.mediumImpact();
+      _showMessage(
+          '❤️ $amount ${amount == 1 ? 'life' : 'lives'} auto-refilled '
+          '(−${formatCount(refillCost * amount)} 🪙)');
+      await _refresh();
+    } on ApiException {
+      // Server rejected (race, out of coins) — the manual +1 button stays
+      // available and the next poll re-checks.
+    } finally {
+      _autoRefilling = false;
+    }
+  }
+
   void _showOutOfHints() {
     showDialog<void>(
       context: context,
@@ -657,8 +721,8 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
           ],
         ),
         content: Text(
-          'Hints reveal clues, remove wrong options and nudge you toward the '
-          'right answer. You can buy 1 hint instantly for '
+          'Hints reveal clues and nudge you toward the right picture. You can '
+          'buy 1 hint instantly for '
           '${GameData.instance.hintPriceCoins} coins, '
           'earn one free by watching a short ad, or grab a pack from the store.\n\n'
           'Coin balance: ${formatCount(GameData.instance.coins)} 🪙',
@@ -701,7 +765,9 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
                 MaterialPageRoute(builder: (_) => const StoreScreen()),
               );
             },
-            style: FilledButton.styleFrom(backgroundColor: AppColors.purple),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.purple,
+            ),
             child: const Text('Store'),
           ),
         ],
@@ -730,20 +796,7 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     );
   }
 
-  // Nudge helpers: first letter and length from the server hint payload.
-  String _firstLetter(Map<String, dynamic> round) {
-    if (_nudgeFirstLetter != null && _nudgeFirstLetter!.isNotEmpty) {
-      return _nudgeFirstLetter!;
-    }
-    return '?';
-  }
-
-  int _wordLength(Map<String, dynamic> round) {
-    if (_nudgeLength != null && _nudgeLength! > 0) {
-      return _nudgeLength!;
-    }
-    return (round['word'] as String? ?? '').length;
-  }
+  // ---- Match board ----------------------------------------------------------
 
   Widget _buildTopBar(String label) {
     return Padding(
@@ -961,95 +1014,266 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     );
   }
 
-  Widget _buildPictureCard(Map<String, dynamic> round) {
-    final hint = _hintClueRevealed
-        ? round['hint'] as String? ?? ''
-        : ''; // clue costs a hint — hidden until purchased
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.ink.withValues(alpha: 0.06)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
+  Widget _buildProgressHeader() {
+    final total = _itemTotal;
+    final matched = min(_myMatches.length, total);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
       child: Column(
         children: [
-          const Text(
-            'WHICH WORD MATCHES?',
-            style: TextStyle(
-              fontSize: 10,
-              letterSpacing: 1.6,
-              fontWeight: FontWeight.w800,
-              color: Colors.grey,
-            ),
+          LinearProgressIndicator(
+            value: total == 0 ? 0 : matched / total,
+            minHeight: 10,
+            backgroundColor: const Color(0xFFE6E3F5),
+            color: AppColors.purple,
           ),
-          const SizedBox(height: 14),
-          Text(
-            round['picture'] as String? ?? '❓',
-            style: const TextStyle(fontSize: 88, height: 1.1),
-          ),
-          if (_hintNudgeUsed) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppColors.palePurple,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                'Starts with "${_firstLetter(round)}" · '
-                '${_wordLength(round)} letters',
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '$matched of $total matched',
                 style: const TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.purple,
+                  color: Colors.black54,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
                 ),
               ),
-            ),
-          ],
-          if (hint.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF1C9),
-                borderRadius: BorderRadius.circular(12),
+              Text(
+                total == 0 ? '0%' : '${((matched / total) * 100).toInt()}%',
+                style: const TextStyle(
+                  color: AppColors.purple,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                ),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.lightbulb_rounded,
-                      size: 15, color: Color(0xFFB58A00)),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      hint,
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        fontStyle: FontStyle.italic,
-                        color: Color(0xFF8A6800),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+            ],
+          ),
         ],
       ),
     );
   }
 
+  /// One picture box: accepts dropped words AND tap-matching (tap a chip,
+  /// then tap its picture box) — the same mechanic as the match screen.
+  Widget _buildBox(Map<String, dynamic> item) {
+    final id = item['id'] as String;
+    final isMatched = _myMatches.contains(id);
+    final isHinted = _hintTarget == id;
+    final isWrong = _wrongTargetId == id;
+    final revealedWord = item['word'] as String?; // sent once round resolves
+    final locked = _submitting || _timedOut || _matchedAll;
+    final placed = _placedWords[id];
+
+    return DragTarget<String>(
+      onWillAcceptWithDetails: (details) =>
+          !isMatched && !locked && _remainingChips.contains(details.data),
+      onAcceptWithDetails: (details) =>
+          _submitMatch(id, details.data),
+      builder: (context, candidates, rejected) {
+        final isHovering = candidates.isNotEmpty;
+
+        return GestureDetector(
+          onTap: () {
+            final word = _selectedWord;
+            if (word != null && !locked) _submitMatch(id, word);
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: isMatched
+                  ? AppColors.paleGreen
+                  : isWrong
+                      ? const Color(0xFFFFEEEE)
+                      : isHinted
+                          ? const Color(0xFFFFF1C9)
+                          : Colors.white,
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(
+                color: isMatched
+                    ? AppColors.green
+                    : isWrong
+                        ? Colors.redAccent
+                        : isHovering || isHinted
+                            ? AppColors.purple
+                            : const Color(0xFFE8E8F1),
+                width: isHovering || isHinted || isWrong ? 2.5 : 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.03),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  item['picture'] as String? ?? '❓',
+                  style: const TextStyle(fontSize: 40),
+                ),
+                const SizedBox(height: 8),
+                if (isMatched)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(
+                        Icons.check_circle_rounded,
+                        color: AppColors.green,
+                        size: 15,
+                      ),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          placed ?? revealedWord ?? '',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.green,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                else if (revealedWord != null)
+                  // Round resolved without a match — reveal the answer.
+                  Text(
+                    revealedWord,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.black45,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12,
+                    ),
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isHovering
+                          ? AppColors.palePurple
+                          : Colors.grey.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      isHovering
+                          ? 'Drop here!'
+                          : _selectedWord != null
+                              ? 'Tap to match'
+                              : 'Match me',
+                      style: TextStyle(
+                        color: isHovering
+                            ? AppColors.purple
+                            : Colors.black45,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Picture-box grid with the match screen's row rules: 3–4 boxes share a
+  /// single row, larger sets use at most two rows.
+  Widget _buildMatchGrid() {
+    final items = _roundItems;
+    final width = MediaQuery.sizeOf(context).width;
+    var cols = items.length <= 4
+        ? max(2, items.length)
+        : (items.length / 2).ceil();
+    if (width > 640 && items.length >= 5 && cols < 5) cols = 5;
+    if (width > 900 && items.length >= 6 && cols < 6) cols = 6;
+    final aspect = width > 640 ? 0.92 : (cols >= 4 ? 0.85 : 1.02);
+
+    return GridView.count(
+      crossAxisCount: cols,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      mainAxisSpacing: 14,
+      crossAxisSpacing: 14,
+      childAspectRatio: aspect,
+      padding: EdgeInsets.zero,
+      children: items.map(_buildBox).toList(),
+    );
+  }
+
+  /// Word-chip tray, identical in spirit to the match screen's: drag a chip
+  /// onto its picture, or tap the chip and then tap the picture.
+  Widget _buildChipTray() {
+    final chips = _remainingChips;
+    if (chips.isEmpty && _matchedAll) {
+      return const Text(
+        'All matched! 🎉',
+        style: TextStyle(
+          fontWeight: FontWeight.w800,
+          color: AppColors.green,
+          fontSize: 14,
+        ),
+      );
+    }
+
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      alignment: WrapAlignment.center,
+      children: chips.map((word) {
+        final isSelected = _selectedWord == word;
+        final chip = isSelected
+            ? Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(30),
+                  border: Border.all(
+                    color: AppColors.purple,
+                    width: 2.5,
+                  ),
+                ),
+                child: WordChip(word: word),
+              )
+            : WordChip(word: word);
+
+        return Draggable<String>(
+          data: word,
+          feedback: Material(
+            color: Colors.transparent,
+            child: WordChip(word: word, dragging: true),
+          ),
+          childWhenDragging: Opacity(
+            opacity: 0.3,
+            child: WordChip(word: word),
+          ),
+          // Tap = select, tap the picture = match (drag also works).
+          child: GestureDetector(
+            onTap: () {
+              if (_timedOut || _matchedAll) return;
+              HapticFeedback.selectionClick();
+              playSfx(Sfx.click);
+              setState(() {
+                _selectedWord = _selectedWord == word ? null : word;
+              });
+            },
+            child: chip,
+          ),
+        );
+      }).toList(),
+    );
+  }
+
   Widget _buildTimerBar() {
-    const total = Duration(seconds: _roundSeconds);
+    final itemTotal = max(2, _itemTotal);
+    final total = Duration(seconds: min(15, 17 - itemTotal));
     final remaining = _remaining;
     final fraction = (remaining.inMilliseconds / total.inMilliseconds)
         .clamp(0.0, 1.0);
@@ -1101,95 +1325,10 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
     );
   }
 
-  Widget _buildOptions(Map<String, dynamic> round) {
-    final options = (round['options'] as List<dynamic>? ?? [])
-        .cast<String>()
-        .toList();
-    final word = round['word'] as String?; // revealed once the round is over
-    final locked = _iAnswered || _submitting || _remaining <= Duration.zero;
-
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
-      childAspectRatio: 2.6,
-      padding: EdgeInsets.zero,
-      children: options.map((option) {
-        final isSelected = _selected == option;
-        final isRevealedCorrect = word != null && option == word;
-        final isWrongPick = isSelected && !isRevealedCorrect && word != null;
-
-        Color bg = Colors.white;
-        Color border = AppColors.ink.withValues(alpha: 0.08);
-        Color text = AppColors.ink;
-
-        if (locked || word != null) {
-          if (isRevealedCorrect) {
-            bg = AppColors.paleGreen;
-            border = AppColors.green;
-            text = AppColors.green;
-          } else if (isWrongPick || (isSelected && _feedbackGood == false)) {
-            bg = const Color(0xFFFFEEEE);
-            border = Colors.redAccent;
-            text = Colors.redAccent;
-          } else if (isSelected) {
-            bg = AppColors.palePurple;
-            border = AppColors.purple;
-            text = AppColors.purple;
-          }
-        } else if (isSelected) {
-          bg = AppColors.palePurple;
-          border = AppColors.purple;
-        }
-
-        return Material(
-          color: bg,
-          borderRadius: BorderRadius.circular(16),
-          child: InkWell(
-            onTap: locked ? null : () => _answer(option),
-            borderRadius: BorderRadius.circular(16),
-            child: Container(
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: border, width: 1.5),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Flexible(
-                    child: Text(
-                      option,
-                      textAlign: TextAlign.center,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w800,
-                        color: text,
-                      ),
-                    ),
-                  ),
-                  if (isRevealedCorrect && locked) ...[
-                    const SizedBox(width: 6),
-                    const Icon(Icons.check_circle_rounded,
-                        size: 16, color: AppColors.green),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
   Widget _buildFeedback(Map<String, dynamic> round) {
-    final opponentAnswered = round['opponentAnswered'] as bool? ?? false;
-    final word = round['word'] as String?;
-    final timedOut = !_iAnswered && _remaining <= Duration.zero;
+    final opponentMatched =
+        (round['opponentMatchedCount'] as num?)?.toInt() ?? 0;
+    final resolved = round['resolved'] == true;
 
     String? text;
     Color color = AppColors.purple;
@@ -1201,22 +1340,19 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
       icon = _feedbackGood
           ? Icons.check_circle_rounded
           : Icons.error_rounded;
-    } else if (timedOut) {
+    } else if (_timedOut && !_matchedAll) {
       text = "⏱ Time's up! You lost a heart";
       color = Colors.redAccent;
       icon = Icons.timer_off_rounded;
-    } else if (_iAnswered) {
+    } else if (_matchedAll && !resolved) {
       text =
-          "Waiting for ${_opponent?['name'] as String? ?? 'your opponent'}…";
+          '🎉 All matched! Waiting for your opponent… (they have $opponentMatched/$_itemTotal)';
       icon = Icons.hourglass_top_rounded;
-    } else if (opponentAnswered) {
-      text = '⚡ Your opponent already answered — hurry!';
+    } else if (!_matchedAll && opponentMatched > 0) {
+      text = '⚡ Your opponent has matched $opponentMatched of $_itemTotal — hurry!';
       color = Colors.orange;
       icon = Icons.bolt_rounded;
     }
-
-    final showAnswerRow =
-        word != null && _feedback != null && !_feedbackGood;
 
     return Column(
       children: [
@@ -1250,17 +1386,6 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
               ),
             ),
           ),
-        if (showAnswerRow) ...[
-          const SizedBox(height: 10),
-          Text(
-            'The answer was “$word”',
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: AppColors.ink,
-            ),
-          ),
-        ],
       ],
     );
   }

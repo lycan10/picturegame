@@ -58,23 +58,23 @@ class _MatchGameScreenState extends State<MatchGameScreen>
   // picture box. Young kids and users who struggle with dragging need this.
   String? selectedWordId;
 
-  // Countdown, battle-style: a per-item time budget that shrinks as the level
-  // number climbs, so higher levels are tighter on top of having more items.
-  static const int _baseSecondsPerItem = 12;
-  static const int _minSecondsPerItem = 7;
+  // Countdown, battle-style: the total budget shrinks as the box count grows
+  // (2 boxes → 15s, 8 boxes → 9s), matching the battle screen's curve.
+  int get _totalSeconds => min(15, 17 - playItems.length);
   late int _timeLeft;
   Timer? _countdown;
   bool _timeUp = false;
 
-  int get _secondsPerItem =>
-      max(_minSecondsPerItem, _baseSecondsPerItem - (widget.levelNumber - 1));
-  int get _totalSeconds => _secondsPerItem * widget.level.items.length;
+  // Playable set grows with the level: level 1 → 2 boxes, one more each
+  // level, capped at 8 — identical curve to battle rounds.
+  late final List<MatchItem> playItems =
+      widget.level.items.take(min(8, widget.levelNumber + 1)).toList();
 
   @override
   void initState() {
     super.initState();
     GameData.instance.addListener(_onGameDataChanged);
-    shuffledWords = List<MatchItem>.from(widget.level.items)
+    shuffledWords = List<MatchItem>.from(playItems)
       ..shuffle(Random());
     _startTimer();
   }
@@ -131,7 +131,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
             ),
             const SizedBox(height: 6),
             Text(
-              'You matched ${matched.length} of ${widget.level.items.length}. Try again — faster!',
+              'You matched ${matched.length} of ${playItems.length}. Try again — faster!',
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.black54, fontSize: 14),
             ),
@@ -233,7 +233,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
       hintTarget = null;
       wrongTargetId = null;
       selectedWordId = null;
-      shuffledWords = List<MatchItem>.from(widget.level.items)
+      shuffledWords = List<MatchItem>.from(playItems)
         ..shuffle(Random());
     });
     _startTimer();
@@ -253,7 +253,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
   /// Tapping a picture box with a selected word behaves exactly like a drop.
   void _onTapBox(MatchItem target) {
     if (selectedWordId == null) return;
-    final matches = widget.level.items.where((i) => i.id == selectedWordId);
+    final matches = playItems.where((i) => i.id == selectedWordId);
     if (matches.isEmpty) {
       setState(() => selectedWordId = null);
       return;
@@ -294,7 +294,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
       hintTarget = null;
 
-      if (matched.length == widget.level.items.length) {
+      if (matched.length == playItems.length) {
         _finishLevel();
       }
     });
@@ -302,13 +302,13 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
   // ---- Hints ---------------------------------------------------------------
 
-  MatchItem get _nextUnmatchedTarget => widget.level.items
+  MatchItem get _nextUnmatchedTarget => playItems
       .firstWhere((item) => !matched.contains(item.id));
 
   /// Entry point of the Hint button: opens the mechanic sheet, or the
   /// out-of-hints recovery dialog when the wallet is empty.
   Future<void> _openHintSheet() async {
-    if (isComplete || matched.length == widget.level.items.length) return;
+    if (isComplete || matched.length == playItems.length) return;
 
     if (GameData.instance.hints < 1) {
       _showOutOfHints();
@@ -623,12 +623,12 @@ class _MatchGameScreenState extends State<MatchGameScreen>
     _countdown?.cancel();
     playSfx(Sfx.complete);
 
-    final accuracy = attempts == 0 ? 0.0 : firstAttemptCorrect / attempts;
-    final stars = accuracy == 1.0 && hintsUsed == 0
+    // Star rule: one star lost per miss (a wrong drop), floored at 1.
+    // 0 misses + no hints → 3; miss 1 → 2; miss 2+ → 1.
+    final misses = attempts - firstAttemptCorrect;
+    final stars = misses == 0 && hintsUsed == 0
         ? 3
-        : accuracy >= 0.8
-            ? 2
-            : 1;
+        : (3 - misses).clamp(1, 2);
 
     if (!completionReported) {
       completionReported = true;
@@ -723,9 +723,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
   /// Compact circular countdown, mirroring the battle screen's timer UI.
   Widget _buildTimerBar() {
-    final fraction = _totalSeconds == 0
-        ? 0.0
-        : (_timeLeft / _totalSeconds).clamp(0.0, 1.0);
+    final fraction = (_timeLeft / _totalSeconds).clamp(0.0, 1.0);
     final urgent = _timeLeft <= 10;
 
     return TweenAnimationBuilder<double>(
@@ -760,7 +758,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
           ),
           const Spacer(),
           Text(
-            _timeUp ? "Time's up!" : '${_secondsPerItem}s per item',
+            _timeUp ? "Time's up!" : '${_totalSeconds}s total',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w800,
@@ -911,7 +909,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
   @override
   Widget build(BuildContext context) {
-    final items = widget.level.items;
+    final items = playItems;
 
     return PopScope(
       canPop: false,
@@ -1019,17 +1017,17 @@ class _MatchGameScreenState extends State<MatchGameScreen>
             // Main Picture Grid Cards
             Expanded(
               child: Builder(builder: (context) {
-                // Stretch to fill wide screens (tablets/landscape) instead of
-                // blowing 2-3 giant cells up; phones keep the cozy layout.
+                // Row rules: 3-4 boxes share a single row; larger sets use at
+                // most two rows (ceil(count / 2) columns). Wide screens widen
+                // the rows instead of blowing giant cells up, keeping the
+                // two-row cap.
                 final width = MediaQuery.sizeOf(context).width;
-                final cols = width > 900
-                    ? 6
-                    : width > 640
-                        ? 5
-                        : width > 420
-                            ? (items.length > 4 ? 3 : 2)
-                            : (items.length > 4 ? 3 : 2);
-                final aspect = width > 640 ? 0.92 : (items.length > 4 ? 0.85 : 1.02);
+                var cols = items.length <= 4
+                    ? max(2, items.length)
+                    : (items.length / 2).ceil();
+                if (width > 640 && items.length >= 5 && cols < 5) cols = 5;
+                if (width > 900 && items.length >= 6 && cols < 6) cols = 6;
+                final aspect = width > 640 ? 0.92 : (cols >= 4 ? 0.85 : 1.02);
 
                 return GridView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 16),

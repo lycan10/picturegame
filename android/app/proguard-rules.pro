@@ -21,7 +21,7 @@
 -keep class com.google.android.gms.internal.ads.** { *; }
 -dontwarn com.google.android.gms.ads.**
 -keep class * implements io.flutter.plugins.googlemobileads.NativeAdFactory { *; }
--keep class com.example.picture_match.MainActivity { *; }
+-keep class com.lycan.buzzer.MainActivity { *; }
 
 # ---------------------------------------------------------------------------
 # WorkManager (pulled in by Firebase Messaging): its default initializer

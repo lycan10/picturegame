@@ -1,0 +1,28 @@
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:picture_match/main.dart';
+
+void main() {
+  testWidgets('Home screen renders worlds and navigation', (tester) async {
+    await tester.pumpWidget(const PictureMatchApp());
+    await tester.pump();
+
+    expect(find.text('Choose your world'), findsOneWidget);
+
+    // The world cards sit below the fold of the 600px test viewport and the
+    // home ListView builds lazily — scroll down before expecting them.
+    await tester.scrollUntilVisible(
+      find.text('Animal Kingdom'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+    expect(find.text('Animal Kingdom'), findsOneWidget);
+
+    // Bottom navigation tabs exist.
+    expect(find.text('Home'), findsOneWidget);
+    expect(find.text('Battle'), findsOneWidget);
+    expect(find.text('Leaderboard'), findsOneWidget);
+    expect(find.text('Profile'), findsOneWidget);
+  });
+}

@@ -7,9 +7,9 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:457768377190:android:9c904d860bc84eab72c6a7",
+        "mobilesdk_app_id": "1:457768377190:android:0d065a3874c88ccf72c6a7",
         "android_client_info": {
-          "package_name": "com.example.picture_match"
+          "package_name": "com.lycan.buzzer"
         }
       },
       "oauth_client": [],

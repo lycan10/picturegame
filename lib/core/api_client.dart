@@ -508,18 +508,26 @@ class ApiClient {
   Future<Map<String, dynamic>> battleState(String code) =>
       _send('GET', '/battles/rooms/$code', authorized: true);
 
-  Future<Map<String, dynamic>> answerBattle(String code, int roundNo, String choice) =>
-      _send('POST', '/battles/rooms/$code/answer', authorized: true,
-          body: {'roundNo': roundNo, 'choice': choice});
+  /// Drag-match submit: drop `word` on the picture box `itemId`. The server
+  /// validates the pair, appends correct matches atomically and returns the
+  /// full battle state plus a top-level `matched` flag (wrong drops are
+  /// shake-only feedback — no life lost).
+  Future<Map<String, dynamic>> battleMatch(String code, int roundNo, String itemId, String word) =>
+      _send('POST', '/battles/rooms/$code/match', authorized: true,
+          body: {'roundNo': roundNo, 'itemId': itemId, 'word': word});
 
-  /// Spends 1 hint server-side and returns the hint payload
-  /// ({remove: 'Wrong'} or {firstLetter: 'L', length: 4}; clue returns {}).
+  /// Spends 1 hint server-side and returns the hint payload for the player's
+  /// first unmatched box: {itemId, hint} for 'clue', {itemId} for 'nudge'.
   Future<Map<String, dynamic>> battleHint(String code, int roundNo, String kind) =>
       _send('POST', '/battles/rooms/$code/hint', authorized: true,
           body: {'roundNo': roundNo, 'kind': kind});
 
-  Future<Map<String, dynamic>> battleRefillLife(String code) =>
-      _send('POST', '/battles/rooms/$code/refill-life', authorized: true);
+  /// Buys [amount] lives (1–2) during a battle; costs
+  /// battle_life_refill_cost × amount. The server only permits refills at
+  /// exactly 1 life (max 3 total).
+  Future<Map<String, dynamic>> battleRefillLife(String code, {int amount = 1}) =>
+      _send('POST', '/battles/rooms/$code/refill-life', authorized: true,
+          body: {'amount': amount});
 
   Future<void> battleForfeit(String code) =>
       _send('POST', '/battles/rooms/$code/forfeit', authorized: true);

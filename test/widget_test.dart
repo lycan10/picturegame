@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:picture_match/main.dart';
@@ -8,6 +9,15 @@ void main() {
     await tester.pump();
 
     expect(find.text('Choose your world'), findsOneWidget);
+
+    // The world cards sit below the fold of the 600px test viewport and the
+    // home ListView builds lazily — scroll down before expecting them.
+    await tester.scrollUntilVisible(
+      find.text('Animal Kingdom'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
     expect(find.text('Animal Kingdom'), findsOneWidget);
 
     // Bottom navigation tabs exist.

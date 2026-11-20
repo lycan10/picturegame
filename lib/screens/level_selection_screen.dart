@@ -81,7 +81,14 @@ class _LevelSelectionScreenState extends State<LevelSelectionScreen> {
           onNext: index + 1 < levels.length
               ? () {
                   Navigator.pop(context);
-                  _openLevel(index + 1);
+                  // Guests pay the same rewarded "ticket" on Next Level as
+                  // they do from the grid — the direct call used to bypass
+                  // the interstitial entirely.
+                  if (game.isGuestLike) {
+                    _openLevelAsGuest(index + 1);
+                  } else {
+                    _openLevel(index + 1);
+                  }
                 }
               : null,
         ),

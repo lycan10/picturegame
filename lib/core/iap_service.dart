@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'api_client.dart';
+import 'game_data.dart';
 
 /// Catalog product definition
 class IapProductDef {
@@ -162,10 +164,23 @@ class IapService extends ChangeNotifier {
           debugPrint('[IAP] Purchase succeeded: ${purchase.productID}');
           final def = catalog[purchase.productID];
           if (def != null) {
-            onPurchaseSuccess?.call(def);
-          }
-          if (purchase.pendingCompletePurchase) {
-            await _iap.completePurchase(purchase);
+            // Settle against the server wallet FIRST (source of truth). A
+            // local-only grant would be wiped by the next sync snapshot.
+            final settled = await _settleServerSide(purchase);
+            if (settled) {
+              onPurchaseSuccess?.call(def);
+            }
+            // On settlement failure the purchase is intentionally NOT
+            // completed — the store re-delivers unfinished consumables on
+            // the next launch, which retries the settlement.
+            if (purchase.pendingCompletePurchase && settled) {
+              await _iap.completePurchase(purchase);
+            }
+          } else {
+            // Unknown product: complete to clear the queue, nothing to grant.
+            if (purchase.pendingCompletePurchase) {
+              await _iap.completePurchase(purchase);
+            }
           }
           break;
 
@@ -184,6 +199,46 @@ class IapService extends ChangeNotifier {
           }
           break;
       }
+    }
+  }
+
+  /// Settles a completed store purchase against the server wallet
+  /// (POST /store/iap/verify — catalog-bound and idempotent per token) and
+  /// adopts the authoritative balances. Returns false when settlement
+  /// failed; the caller must then leave the purchase uncompleted so the
+  /// store re-delivers it and settlement is retried.
+  Future<bool> _settleServerSide(PurchaseDetails purchase) async {
+    try {
+      final platform =
+          defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android';
+      final verification = purchase.verificationData;
+      final token = verification.serverVerificationData.isNotEmpty
+          ? verification.serverVerificationData
+          : verification.localVerificationData;
+      final json = await ApiClient.instance.iapVerify(
+        productId: purchase.productID,
+        purchaseToken: token.isNotEmpty
+            ? token
+            : '${purchase.productID}:${DateTime.now().millisecondsSinceEpoch}',
+        platform: platform,
+      );
+      if (json['coins'] != null) {
+        GameData.instance.setCoins(json['coins'] as int);
+      }
+      if (json['hints'] != null) {
+        GameData.instance.setHints(json['hints'] as int);
+      }
+      return true;
+    } on ApiException catch (err) {
+      debugPrint('[IAP] server settlement failed: ${err.message}');
+      onPurchaseError?.call(err.isNetworkError
+          ? 'You are offline — the purchase will settle next time the app is online.'
+          : err.message);
+      return false;
+    } catch (err) {
+      debugPrint('[IAP] server settlement failed: $err');
+      onPurchaseError?.call('Purchase could not be verified yet.');
+      return false;
     }
   }
 

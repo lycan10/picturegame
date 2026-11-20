@@ -31,6 +31,11 @@ class ApiClient {
   /// the session is dead and the caller should log out locally.
   bool sessionExpired = false;
 
+  /// Fired when the stored credentials are rejected on refresh and wiped.
+  /// GameData listens and drops the cached user — without this the UI kept
+  /// showing a signed-in state while every authorized call 401'd.
+  void Function()? onSessionExpired;
+
   Future<String?> get accessToken async =>
       (await _store.auth)['accessToken'] as String?;
   Future<String?> get refreshToken async =>
@@ -113,7 +118,30 @@ class ApiClient {
     }
   }
 
+  Completer<bool>? _refreshInFlight;
+
   Future<bool> _tryRefresh() async {
+    // Concurrent 401s share ONE refresh. The backend's refresh token is
+    // single-use and reusing a rotated token revokes the whole family — so
+    // parallel refreshes (startup runs sync + achievements + battle polls
+    // together) used to force-log the user out mid-session.
+    final inFlight = _refreshInFlight;
+    if (inFlight != null) return inFlight.future;
+    final completer = Completer<bool>();
+    _refreshInFlight = completer;
+    try {
+      final result = await _doRefresh();
+      if (!completer.isCompleted) completer.complete(result);
+      return result;
+    } catch (err) {
+      if (!completer.isCompleted) completer.complete(false);
+      return false;
+    } finally {
+      _refreshInFlight = null;
+    }
+  }
+
+  Future<bool> _doRefresh() async {
     final refresh = await refreshToken;
     if (refresh == null) return false;
     try {
@@ -126,8 +154,11 @@ class ApiClient {
       return true;
     } on ApiException catch (err) {
       if (err.status == 401) {
-        sessionExpired = true;
         await clearSession();
+        // Set AFTER clearSession (which resets the flag) and tell GameData
+        // so the UI drops the zombie signed-in state.
+        sessionExpired = true;
+        onSessionExpired?.call();
       }
       return false;
     }
@@ -273,7 +304,8 @@ class ApiClient {
     required String currentPassword,
     required String newPassword,
   }) async {
-    final json = await _send('POST', '/auth/change-password', body: {
+    final json = await _send('POST', '/auth/change-password',
+        authorized: true, body: {
       'currentPassword': currentPassword,
       'newPassword': newPassword,
     });
@@ -528,6 +560,24 @@ class ApiClient {
   Future<Map<String, dynamic>> battleRefillLife(String code, {int amount = 1}) =>
       _send('POST', '/battles/rooms/$code/refill-life', authorized: true,
           body: {'amount': amount});
+
+  /// Settles a native in-app purchase server-side (catalog-bound, idempotent
+  /// per [purchaseToken]) and returns the authoritative {coins, hints}.
+  Future<Map<String, dynamic>> iapVerify({
+    required String productId,
+    required String purchaseToken,
+    required String platform,
+  }) =>
+      _send('POST', '/store/iap/verify', authorized: true, body: {
+        'productId': productId,
+        'purchaseToken': purchaseToken,
+        'platform': platform,
+      });
+
+  /// Buys 1 hint for hint_price_coins server-side (atomic debit) and returns
+  /// the authoritative {coins, hints} — the client mirror adopts these.
+  Future<Map<String, dynamic>> buyHints() =>
+      _send('POST', '/store/hints/buy', authorized: true);
 
   Future<void> battleForfeit(String code) =>
       _send('POST', '/battles/rooms/$code/forfeit', authorized: true);

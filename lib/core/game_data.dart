@@ -144,6 +144,16 @@ class GameData extends ChangeNotifier {
   String get username => user?['username'] as String? ?? '@player_one';
   String get avatarEmoji => user?['avatarEmoji'] as String? ?? '🧑';
 
+  /// The ApiClient's refresh was rejected and the stored credentials were
+  /// wiped: drop the cached user so the UI returns to the signed-out state
+  /// instead of a zombie signed-in look while every authorized call 401s.
+  /// Wired to ApiClient.onSessionExpired from main.dart.
+  void handleSessionExpired() {
+    if (user == null) return;
+    user = null;
+    notifyListeners();
+  }
+
   // ---- Content (fetched game data, persisted for offline) -------------------
   Map<String, List<GameLevel>> _content = {
     'animals': animalLevels,
@@ -252,6 +262,14 @@ class GameData extends ChangeNotifier {
     }
   }
 
+  /// Records that a notification was already surfaced by another channel
+  /// (the FCM push itself) so the sync mirror won't fire a second local
+  /// notification for the same inbox item.
+  void markNotificationLocallyShown(String id) {
+    _lastLocalNotifiedId = id;
+    unawaited(_store.setJson(_lastLocalNotifiedKey, {'id': id}));
+  }
+
   /// Refreshes the inbox directly (e.g. when opening the notifications screen).
   Future<void> refreshNotifications() async {
     try {
@@ -318,7 +336,10 @@ class GameData extends ChangeNotifier {
     // Profile → settings); the refill itself is server-validated per buy.
     battleAutoRefill =
         (await _store.getJson(_kBattleAutoRefillKey))['enabled'] as bool? ?? false;
-    await trySync();
+    // Non-blocking: init() is awaited before runApp, so an awaited sync put
+    // a 12s network round-trip on the native splash. The screens listen and
+    // rebuild when the snapshot lands.
+    unawaited(trySync());
   }
 
   // ---- Battle settings -------------------------------------------------------
@@ -344,27 +365,38 @@ class GameData extends ChangeNotifier {
     levelsToday = state['levelsToday'] as int? ?? 0;
     lastCategory = state['lastCategory'] as String? ?? 'animals';
 
+    // Every persisted blob is parsed defensively: a corrupt or schema-drifted
+    // value degrades to a default instead of throwing inside init() — which
+    // runs before runApp and would leave a permanent blank splash.
     final rawUnlocked = state['unlocked'] as Map<String, dynamic>?;
     if (rawUnlocked != null) {
       rawUnlocked.forEach((key, value) {
-        unlocked[key] = (value as List).map((e) => e as int).toSet();
+        if (value is! List) return;
+        unlocked[key] = value.whereType<int>().toSet();
       });
     }
     final rawStars = state['bestStars'] as Map<String, dynamic>?;
     if (rawStars != null) {
       rawStars.forEach((key, value) {
-        bestStars[key] =
-            (value as Map<String, dynamic>).map((k, v) => MapEntry(int.parse(k), v as int));
+        if (value is! Map) return;
+        bestStars[key] = value.map((k, v) => MapEntry(int.tryParse(k) ?? -1, v is int ? v : 0))
+          ..remove(-1);
       });
     }
 
-    final cachedUser = (await _store.auth)['user'] as Map<String, dynamic>?;
-    user = cachedUser;
+    final cachedUser = (await _store.auth)['user'];
+    user = cachedUser is Map<String, dynamic> ? cachedUser : null;
 
     final ops = await _store.pendingOps;
-    _pendingOps
-      ..clear()
-      ..addAll(ops.cast<Map<String, dynamic>>());
+    try {
+      _pendingOps
+        ..clear()
+        ..addAll(ops.whereType<Map<String, dynamic>>());
+    } catch (_) {
+      // Malformed queue: drop it rather than crash init — ops are re-queued
+      // from gameplay and sync converges from the server snapshot anyway.
+      _pendingOps.clear();
+    }
 
     final content = await _store.content;
     final loaded = _parseContent(content);
@@ -379,9 +411,15 @@ class GameData extends ChangeNotifier {
     final cachedAchievements = (await _store.achievementsCache)['achievements']
         as List<dynamic>?;
     if (cachedAchievements != null && cachedAchievements.isNotEmpty) {
-      achievements = cachedAchievements
-          .map((a) => AchievementDef.fromJson(a as Map<String, dynamic>))
-          .toList();
+      try {
+        achievements = cachedAchievements
+            .whereType<Map>()
+            .map((a) => AchievementDef.fromJson(Map<String, dynamic>.from(a)))
+            .toList();
+      } catch (_) {
+        // Schema-drifted cache: keep the defaults; the next refresh fetches
+        // the real definitions from the server.
+      }
     }
 
     // Guests never run trySync, so check the server's content version

@@ -5,6 +5,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../core/api_client.dart';
 import '../core/app_config.dart';
+import '../core/app_nav.dart';
 import '../core/game_data.dart';
 import '../core/login_gate.dart';
 import '../core/formatters.dart';
@@ -21,6 +22,10 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   int selectedTab = 2;
   bool loading = false;
   bool offline = false;
+
+  /// The signed-in player's own rank row (server-computed) — shown pinned
+  /// under the top-10 list when they're not part of it.
+  Map<String, dynamic>? _myRow;
 
   // Sample roster used until the backend responds (and while offline).
   final List<Map<String, dynamic>> players = [
@@ -40,6 +45,19 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   void initState() {
     super.initState();
     _load();
+    // This screen lives in the home IndexedStack (no route events) —
+    // re-fetch whenever its tab comes into view.
+    AppNav.homeTab.addListener(_onTabChanged);
+  }
+
+  @override
+  void dispose() {
+    AppNav.homeTab.removeListener(_onTabChanged);
+    super.dispose();
+  }
+
+  void _onTabChanged() {
+    if (AppNav.homeTab.value == 2 && mounted && !loading) _load();
   }
 
   Set<String> _friendIds = {};
@@ -72,11 +90,26 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               })
           .take(10)
           .toList();
+      // The server computes the player's own rank separately — a player
+      // ranked #47 deserves a row even though they're outside the top 10.
+      final me = json['me'] as Map<String, dynamic>?;
+      final myRow = me == null
+          ? null
+          : {
+              'rank': me['rank'] as int? ?? 0,
+              'name': 'You',
+              'username': '',
+              'score': me['score'] as int? ?? 0,
+              'emoji': me['avatar'] as String? ?? '🧑',
+              'isMe': true,
+              'userId': me['userId'] as String?,
+            };
       if (mounted) {
         setState(() {
           players
             ..clear()
             ..addAll(entries);
+          _myRow = myRow;
           offline = false;
         });
       }
@@ -384,6 +417,30 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                         childCount: ranked.length,
                       ),
                     ),
+
+              // Pinned "your rank" row for players outside the top 10 — the
+              // server computes their rank separately and it used to be
+              // thrown away, so a #47 player had no row at all.
+              if (_myRow != null && !ranked.any((p) => p['isMe'] == true))
+                SliverToBoxAdapter(
+                  child: Container(
+                    color: Colors.white,
+                    padding: const EdgeInsets.fromLTRB(22, 4, 22, 24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Divider(
+                          height: 24,
+                          color: Colors.grey.withValues(alpha: 0.15),
+                        ),
+                        _buildPlayerRow(
+                          player: _myRow!,
+                          rank: _myRow!['rank'] as int? ?? 0,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
             ],
           ),
         ),

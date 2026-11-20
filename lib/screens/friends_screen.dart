@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
 import '../core/formatters.dart';
+import '../core/refetch_on_view.dart';
 import '../core/sound_service.dart';
 import '../theme/app_theme.dart';
 
@@ -14,7 +15,8 @@ class FriendsScreen extends StatefulWidget {
   State<FriendsScreen> createState() => _FriendsScreenState();
 }
 
-class _FriendsScreenState extends State<FriendsScreen> {
+class _FriendsScreenState extends State<FriendsScreen>
+    with RefetchOnView {
   List<Map<String, dynamic>> _friends = [];
   List<Map<String, dynamic>> _incoming = [];
   List<Map<String, dynamic>> _searchResults = [];
@@ -28,6 +30,9 @@ class _FriendsScreenState extends State<FriendsScreen> {
     super.initState();
     _load();
   }
+
+  @override
+  void onViewVisible() => _load();
 
   Future<void> _load() async {
     try {

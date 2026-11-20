@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../core/ads_service.dart';
+import '../core/api_client.dart';
 import '../core/formatters.dart';
 import '../core/game_data.dart';
 import '../core/sound_service.dart';
@@ -90,10 +91,12 @@ class _MatchGameScreenState extends State<MatchGameScreen>
     if (mounted) setState(() {});
   }
 
-  void _startTimer() {
+  void _startTimer({int? startFromSeconds}) {
     _countdown?.cancel();
     _timeUp = false;
-    _timeLeft = _totalSeconds;
+    // Purchased boosts resume from the remaining+boosted budget; a fresh
+    // level (or retry) always starts from the full allowance.
+    _timeLeft = startFromSeconds ?? _totalSeconds;
     _countdown = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted || isComplete || _timeUp) {
         timer.cancel();
@@ -153,26 +156,54 @@ class _MatchGameScreenState extends State<MatchGameScreen>
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   onPressed: () async {
-                    Navigator.pop(dialogContext);
-                    final spent = await GameData.instance
-                        .spendCoins(GameData.instance.timeBoostCostCoins);
-                    if (spent) {
-                      playSfx(Sfx.coin);
-                      setState(() {
-                        _timeUp = false;
-                        _timeLeft += GameData.instance.timeBoostSeconds;
-                      });
-                      _startTimer();
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                                '+${GameData.instance.timeBoostSeconds} seconds added to your time! ⚡'),
-                            behavior: SnackBarBehavior.floating,
-                          ),
-                        );
+                    // Spend FIRST (server-validated — a local-only debit is
+                    // refunded by the next sync snapshot), pop only on
+                    // success. Offline falls back to the local mirror.
+                    final messenger = ScaffoldMessenger.of(dialogContext);
+                    bool spent = false;
+                    try {
+                      final json = await ApiClient.instance
+                          .spend('coins', GameData.instance.timeBoostCostCoins);
+                      if (json['coins'] != null) {
+                        GameData.instance.setCoins(json['coins'] as int);
                       }
+                      spent = true;
+                    } on ApiException catch (err) {
+                      if (!err.isNetworkError) {
+                        messenger.showSnackBar(
+                          SnackBar(
+                              content: Text(err.message),
+                              behavior: SnackBarBehavior.floating),
+                        );
+                        return;
+                      }
+                      // Offline — keep playing with the local mirror.
+                      spent = await GameData.instance
+                          .spendCoins(GameData.instance.timeBoostCostCoins);
                     }
+                    if (dialogContext.mounted) Navigator.pop(dialogContext);
+                    if (!spent) {
+                      messenger.showSnackBar(
+                        const SnackBar(
+                          content: Text('Not enough coins for a time boost.'),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                      return;
+                    }
+                    playSfx(Sfx.coin);
+                    setState(() {
+                      _timeUp = false;
+                      _timeLeft += GameData.instance.timeBoostSeconds;
+                    });
+                    _startTimer(startFromSeconds: _timeLeft);
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text(
+                            '+${GameData.instance.timeBoostSeconds} seconds added to your time! ⚡'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
                   },
                 ),
               ),
@@ -302,8 +333,15 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
   // ---- Hints ---------------------------------------------------------------
 
-  MatchItem get _nextUnmatchedTarget => playItems
-      .firstWhere((item) => !matched.contains(item.id));
+  /// The player's first unmatched box, or null when everything is matched.
+  /// Nullable because the game can complete between a hint tap and the
+  /// wallet spend completing.
+  MatchItem? get _nextUnmatchedTarget {
+    for (final item in playItems) {
+      if (!matched.contains(item.id)) return item;
+    }
+    return null;
+  }
 
   /// Entry point of the Hint button: opens the mechanic sheet, or the
   /// out-of-hints recovery dialog when the wallet is empty.
@@ -401,7 +439,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
       ),
     );
 
-    if (choice == null || isComplete) return;
+    if (choice == null || isComplete || _timeUp) return;
     await _spendHintAndApply(choice);
   }
 
@@ -475,6 +513,12 @@ class _MatchGameScreenState extends State<MatchGameScreen>
       _showOutOfHints();
       return;
     }
+    // The level may have completed (or timed out) while the sheet was open —
+    // hand the hint back rather than spending it into a frozen game.
+    if (isComplete || _timeUp) {
+      await GameData.instance.addHints(1);
+      return;
+    }
 
     setState(() {
       hintsUsed++;
@@ -495,6 +539,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
   void _applyRevealClue() {
     final target = _nextUnmatchedTarget;
+    if (target == null) return;
     revealedClueBoxId = target.id;
     hintTarget = target.id;
     feedback = '💡 Clue: ${target.hint}';
@@ -503,6 +548,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
   void _applyNudge() {
     final target = _nextUnmatchedTarget;
+    if (target == null) return;
     hintTarget = target.id;
     feedback = '🔍 Look closely at the highlighted picture.';
     isSuccessFeedback = false;
@@ -510,6 +556,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
 
   void _applyRemoveWrongOption() {
     final target = _nextUnmatchedTarget;
+    if (target == null) return;
     final candidates = shuffledWords
         .where((word) => word.id != target.id && !matched.contains(word.id))
         .toList();
@@ -553,18 +600,42 @@ class _MatchGameScreenState extends State<MatchGameScreen>
             FilledButton.icon(
               onPressed: () async {
                 Navigator.pop(dialogContext);
-                final spent = await GameData.instance
-                    .spendCoins(GameData.instance.hintPriceCoins);
-                if (spent && mounted) {
-                  await GameData.instance.addHints(1);
+                // Server-validated buy: the store wallet is the source of
+                // truth; a local grant would be wiped by the next sync.
+                try {
+                  final json = await ApiClient.instance.buyHints();
+                  if (!mounted) return;
+                  if (json['coins'] != null) {
+                    GameData.instance.setCoins(json['coins'] as int);
+                  }
+                  if (json['hints'] != null) {
+                    GameData.instance.setHints(json['hints'] as int);
+                  }
                   playSfx(Sfx.coin);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content:
-                    Text('Purchased 1 hint for ${formatCount(GameData.instance.hintPriceCoins)} coins! 🎉'),
+                      content: Text(
+                          'Purchased 1 hint for ${formatCount(GameData.instance.hintPriceCoins)} coins! 🎉'),
                       behavior: SnackBarBehavior.floating,
                     ),
                   );
+                } on ApiException catch (err) {
+                  if (!mounted) return;
+                  if (err.isNetworkError) {
+                    // Offline: keep the local-only mirror behaviour.
+                    final spent = await GameData.instance
+                        .spendCoins(GameData.instance.hintPriceCoins);
+                    if (spent) {
+                      await GameData.instance.addHints(1);
+                      playSfx(Sfx.coin);
+                    }
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                          content: Text(err.message),
+                          behavior: SnackBarBehavior.floating),
+                    );
+                  }
                 }
               },
               icon: const Icon(Icons.stars_rounded, size: 17, color: Color(0xFFF5B82E)),
@@ -960,7 +1031,12 @@ class _MatchGameScreenState extends State<MatchGameScreen>
             // Header Info & Progress
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
-              child: Column(
+              child: Builder(builder: (context) {
+                // Defensive: an empty playable set (stale cached manifest) must
+                // not produce 0/0 → NaN.toInt(), which throws during build.
+                final progress =
+                    items.isEmpty ? 0.0 : matched.length / items.length;
+                return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
@@ -980,7 +1056,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
                   ClipRRect(
                     borderRadius: BorderRadius.circular(10),
                     child: LinearProgressIndicator(
-                      value: matched.length / items.length,
+                      value: progress,
                       minHeight: 10,
                       backgroundColor: const Color(0xFFE6E3F5),
                       color: AppColors.purple,
@@ -999,7 +1075,7 @@ class _MatchGameScreenState extends State<MatchGameScreen>
                         ),
                       ),
                       Text(
-                        '${((matched.length / items.length) * 100).toInt()}%',
+                        '${(progress * 100).toInt()}%',
                         style: const TextStyle(
                           color: AppColors.purple,
                           fontWeight: FontWeight.w800,
@@ -1011,7 +1087,8 @@ class _MatchGameScreenState extends State<MatchGameScreen>
                   const SizedBox(height: 10),
                   _buildTimerBar(),
                 ],
-              ),
+                );
+              }),
             ),
 
             // Main Picture Grid Cards

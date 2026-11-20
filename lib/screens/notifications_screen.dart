@@ -1,6 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../core/game_data.dart';
+import '../core/push_notification_service.dart';
+import '../core/refetch_on_view.dart';
 import '../theme/app_theme.dart';
 
 /// Server notification inbox: contest invites, match reminders, results.
@@ -12,7 +16,8 @@ class NotificationsScreen extends StatefulWidget {
   State<NotificationsScreen> createState() => _NotificationsScreenState();
 }
 
-class _NotificationsScreenState extends State<NotificationsScreen> {
+class _NotificationsScreenState extends State<NotificationsScreen>
+    with RefetchOnView {
   final GameData game = GameData.instance;
 
   @override
@@ -20,6 +25,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     super.initState();
     game.refreshNotifications();
   }
+
+  @override
+  void onViewVisible() => game.refreshNotifications();
 
   String _when(String? createdAt) {
     if (createdAt == null) return '';
@@ -59,111 +67,174 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }
   }
 
+  /// Maps an inbox row to the deep-link payload the push-tap router
+  /// understands. The row's own `data` already carries the same `kind`/`code`
+  /// keys the server sends with pushes; the type is a reliable fallback.
+  Map<String, dynamic> _linkData(Map<String, dynamic> n) {
+    final raw = n['data'];
+    if (raw is Map) {
+      final data = Map<String, dynamic>.from(raw);
+      data['kind'] ??= _kindFor(n['type'] as String?);
+      return data;
+    }
+    if (raw is String && raw.isNotEmpty) {
+      try {
+        final parsed = jsonDecode(raw);
+        if (parsed is Map) {
+          final data = Map<String, dynamic>.from(parsed);
+          data['kind'] ??= _kindFor(n['type'] as String?);
+          return data;
+        }
+      } catch (_) {}
+    }
+    return {'kind': _kindFor(n['type'] as String?)};
+  }
+
+  String _kindFor(String? type) {
+    switch (type) {
+      case 'friend_request':
+      case 'friend_accepted':
+        return 'friends';
+      case 'contest_qualified':
+      case 'contest_match_ready':
+      case 'contest_reminder':
+      case 'contest_result':
+        return 'contest';
+      default:
+        return type ?? ''; // battle_lobby/battle_live/battle_invite/… are kinds already
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final items = game.notifications;
+    // Read the live list INSIDE the AnimatedBuilder — capturing it in build()
+    // meant refreshes and mark-read never appeared (the outer build never
+    // re-ran, so `items` was a stale reference after every update).
     return Scaffold(
       appBar: AppBar(
         title: const Text('Notifications',
             style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
-          if (game.unreadNotifications > 0)
-            TextButton(
-              onPressed: () => game.markNotificationsRead(),
-              child: const Text('Mark all read'),
-            ),
+          AnimatedBuilder(
+            animation: game,
+            builder: (context, _) {
+              if (game.unreadNotifications <= 0) {
+                return const SizedBox.shrink();
+              }
+              return TextButton(
+                onPressed: () => game.markNotificationsRead(),
+                child: const Text('Mark all read'),
+              );
+            },
+          ),
         ],
       ),
-      body: items.isEmpty
-          ? const Center(
-              child: Padding(
-                padding: EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.notifications_off_rounded,
-                        size: 56, color: Colors.grey),
-                    SizedBox(height: 14),
-                    Text('No notifications yet',
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    SizedBox(height: 6),
-                    Text(
-                      'Contest invites, match reminders and results will show up here.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.black54),
+      body: AnimatedBuilder(
+        animation: game,
+        builder: (context, _) {
+          final items = game.notifications;
+          return items.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.notifications_off_rounded,
+                            size: 56, color: Colors.grey),
+                        SizedBox(height: 14),
+                        Text('No notifications yet',
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        SizedBox(height: 6),
+                        Text(
+                          'Contest invites, match reminders and results will show up here.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.black54),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-            )
-          : AnimatedBuilder(
-              animation: game,
-              builder: (context, _) => ListView.separated(
-                padding: const EdgeInsets.all(16),
-                itemCount: items.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 10),
-                itemBuilder: (context, i) {
-                  final n = items[i];
-                  final read = n['read'] as bool? ?? false;
-                  final type = n['type'] as String?;
-                  return Container(
-                    decoration: BoxDecoration(
-                      color: read ? Colors.white : const Color(0xFFF4F1FE),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                        color: read ? const Color(0xFFEDEEF4) : AppColors.purple.withValues(alpha: 0.25),
+                  ),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: items.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, i) {
+                    final n = items[i];
+                    final read = n['read'] as bool? ?? false;
+                    final type = n['type'] as String?;
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: read ? Colors.white : const Color(0xFFF4F1FE),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                          color: read
+                              ? const Color(0xFFEDEEF4)
+                              : AppColors.purple.withValues(alpha: 0.25),
+                        ),
                       ),
-                    ),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: _accentFor(type).withValues(alpha: 0.15),
-                        child: Icon(_iconFor(type), color: _accentFor(type), size: 22),
-                      ),
-                      title: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              n['title'] as String? ?? '',
-                              style: TextStyle(
-                                fontWeight: read ? FontWeight.w700 : FontWeight.w900,
-                                fontSize: 14,
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor:
+                              _accentFor(type).withValues(alpha: 0.15),
+                          child:
+                              Icon(_iconFor(type), color: _accentFor(type), size: 22),
+                        ),
+                        title: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                n['title'] as String? ?? '',
+                                style: TextStyle(
+                                  fontWeight: read
+                                      ? FontWeight.w700
+                                      : FontWeight.w900,
+                                  fontSize: 14,
+                                ),
                               ),
                             ),
-                          ),
-                          if (!read)
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: AppColors.purple,
-                                shape: BoxShape.circle,
+                            if (!read)
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(
+                                  color: AppColors.purple,
+                                  shape: BoxShape.circle,
+                                ),
                               ),
+                          ],
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 3),
+                            Text(
+                              n['body'] as String? ?? '',
+                              style: const TextStyle(
+                                  fontSize: 12.5, color: Colors.black87),
                             ),
-                        ],
+                            const SizedBox(height: 4),
+                            Text(
+                              _when(n['createdAt'] as String?),
+                              style: const TextStyle(
+                                  fontSize: 10.5, color: Colors.black38),
+                            ),
+                          ],
+                        ),
+                        onTap: () {
+                          if (!read) game.markNotificationsRead([n['id'] as String]);
+                          // Every row is actionable: route to the screen for
+                          // further action via the shared deep-link mapping
+                          // (same targets as tray-tap pushes).
+                          PushNotificationService.instance
+                              .handleDeepLink(_linkData(n));
+                        },
                       ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const SizedBox(height: 3),
-                          Text(
-                            n['body'] as String? ?? '',
-                            style: const TextStyle(fontSize: 12.5, color: Colors.black87),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            _when(n['createdAt'] as String?),
-                            style: const TextStyle(fontSize: 10.5, color: Colors.black38),
-                          ),
-                        ],
-                      ),
-                      onTap: () {
-                        if (!read) game.markNotificationsRead([n['id'] as String]);
-                      },
-                    ),
-                  );
-                },
-              ),
-            ),
+                    );
+                  },
+                );
+        },
+      ),
     );
   }
 }

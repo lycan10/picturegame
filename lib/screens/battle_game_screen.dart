@@ -736,13 +736,33 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
             FilledButton.icon(
               onPressed: () async {
                 Navigator.pop(dialogContext);
-                final spent = await GameData.instance
-                    .spendCoins(GameData.instance.hintPriceCoins);
-                if (spent) {
-                  await GameData.instance.addHints(1);
+                // Server-validated buy: the store wallet is the source of
+                // truth; a local grant would be wiped by the next sync.
+                try {
+                  final json = await ApiClient.instance.buyHints();
+                  if (!mounted) return;
+                  if (json['coins'] != null) {
+                    GameData.instance.setCoins(json['coins'] as int);
+                  }
+                  if (json['hints'] != null) {
+                    GameData.instance.setHints(json['hints'] as int);
+                  }
                   playSfx(Sfx.coin);
                   _showMessage(
                       'Purchased 1 hint for ${GameData.instance.hintPriceCoins} coins! 🎉');
+                } on ApiException catch (err) {
+                  if (!mounted) return;
+                  if (err.isNetworkError) {
+                    // Offline: keep the local-only mirror behaviour.
+                    final spent = await GameData.instance
+                        .spendCoins(GameData.instance.hintPriceCoins);
+                    if (spent) {
+                      await GameData.instance.addHints(1);
+                      playSfx(Sfx.coin);
+                    }
+                  } else {
+                    _showMessage(err.message);
+                  }
                 }
               },
               icon: const Icon(Icons.stars_rounded, size: 17, color: Color(0xFFF5B82E)),
@@ -808,6 +828,14 @@ class _BattleGameScreenState extends State<BattleGameScreen> {
               if (await _confirmLeave()) {
                 _pollTimer?.cancel();
                 _tickTimer?.cancel();
+                // Forfeit like the system-back path does — leaving without
+                // forfeiting stranded the battle (the absent player timed out
+                // every round until eliminated). _confirmLeave only returns
+                // true for live/waiting battles, so this is a no-op when the
+                // battle already ended.
+                try {
+                  await ApiClient.instance.battleForfeit(widget.code);
+                } catch (_) {}
                 if (mounted) Navigator.of(context).pop();
               }
             },

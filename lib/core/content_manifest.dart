@@ -88,6 +88,10 @@ ParsedContentManifest? parseContentManifest(Map<String, dynamic> manifest) {
         ));
       }
     }
+    // An item-less level is unplayable AND divides by zero in the game
+    // screen (matched/length → NaN.toInt() throws) — admins routinely create
+    // levels before filling them, so don't ship those until they have items.
+    if (items.isEmpty) continue;
     (parsedLevels[world] ??= []).add(GameLevel(title, items));
   }
   if (parsedLevels.isEmpty) return null;

@@ -363,19 +363,32 @@ class _BattleScreenState extends State<BattleScreen> {
     }
   }
 
+  bool _entering = false;
+
   /// Closes any open waiting/search dialog and opens the live battle.
-  Future<void> _enterBattle(String code) async {
+  /// Guarded so overlapping poll ticks (or a poll racing a manual start)
+  /// can never stack two battle screens or double-charge the local mirror.
+  Future<void> _enterBattle(String code, {bool force = false}) async {
+    if (_entering && !force) return;
+    _entering = true;
     _pollTimer?.cancel();
     if (mounted && (_searchDialogOpen || _inviteDialogOpen)) {
       _searchDialogOpen = false;
       _inviteDialogOpen = false;
       Navigator.of(context, rootNavigator: true).pop();
     }
-    if (!mounted) return;
+    if (!mounted) {
+      _entering = false;
+      return;
+    }
 
-    await Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute(builder: (_) => BattleGameScreen(code: code)),
-    );
+    try {
+      await Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute(builder: (_) => BattleGameScreen(code: code)),
+      );
+    } finally {
+      _entering = false;
+    }
 
     if (!mounted) return;
     setState(() {
@@ -403,8 +416,8 @@ class _BattleScreenState extends State<BattleScreen> {
           // The host's local wallet mirrors the server charge at join time;
           // joiners already spent locally when they joined.
           if (_isHost) {
-            final isQuick = _searchDialogOpen;
-            await GameData.instance.spendCoins(isQuick
+            final mode = state['mode'] as String?;
+            await GameData.instance.spendCoins(mode == 'quick'
                 ? GameData.instance.quickBattleCost
                 : GameData.instance.createBattleCost);
           }
@@ -415,6 +428,15 @@ class _BattleScreenState extends State<BattleScreen> {
           final guestName =
               (state['guest'] as Map<String, dynamic>?)?['name'] as String?;
           if (!mounted) return;
+
+          // Friend invite flow: the guest joined the lobby and the host's
+          // app is open — start the battle straight into the game screen
+          // instead of waiting for a manual "Start" tap.
+          if (_isHost && canStart) {
+            await _startBattle();
+            return;
+          }
+
           setState(() {
             _inLobby = inLobby;
             _canStart = canStart;
@@ -1386,20 +1408,29 @@ class _BattleScreenState extends State<BattleScreen> {
     }
   }
 
-  /// Host accepts the lobby: activates the battle and enters it.
+  /// Host accepts the lobby: activates the battle and enters it. Also fired
+  /// automatically by the poll the moment a guest joins the lobby, so a host
+  /// sitting in the app goes straight into the battle without a manual tap.
   Future<void> _startBattle() async {
+    if (_entering) return;
+    _entering = true;
     final code = roomCode;
-    if (code.isEmpty || !mounted) return;
+    if (code.isEmpty || !mounted) {
+      _entering = false;
+      return;
+    }
     try {
       await ApiClient.instance.startBattle(code);
       if (!mounted) return;
       // Mirror the server charge that happened when the opponent joined.
       await GameData.instance.spendCoins(GameData.instance.createBattleCost);
-      await _enterBattle(code);
+      await _enterBattle(code, force: true);
     } on ApiException catch (err) {
       _showMessage(err.isNetworkError
           ? 'You are offline — starting needs a connection.'
           : err.message);
+    } finally {
+      _entering = false;
     }
   }
 
@@ -1408,13 +1439,17 @@ class _BattleScreenState extends State<BattleScreen> {
     List<Map<String, dynamic>> friends = [];
     String? error;
     final invited = <String>{};
+    // The load-once guard must be its own flag: with an EMPTY friends list,
+    // `friends.isEmpty` stayed true and every rebuild re-fired the request
+    // in an infinite loop.
+    var friendsLoaded = false;
 
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) {
-          // Load once.
-          if (friends.isEmpty && error == null && !invited.isNotEmpty) {
+          if (!friendsLoaded && error == null) {
+            friendsLoaded = true;
             ApiClient.instance.friends().then((json) {
               if (!dialogContext.mounted) return;
               setDialogState(() {

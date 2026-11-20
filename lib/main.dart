@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'firebase_options.dart';
 import 'core/ads_service.dart';
+import 'core/api_client.dart';
 import 'core/app_config.dart';
 import 'core/game_data.dart';
 import 'core/app_nav.dart';
@@ -19,19 +20,24 @@ import 'theme/app_theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Firebase and Crashlytics
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  // Initialize Firebase and Crashlytics. A config failure must not leave a
+  // frozen splash — the app still runs (without push/Crashlytics reporting).
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
 
-  // Pass all uncaught "fatal" errors from the framework to Crashlytics
-  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+    // Pass all uncaught "fatal" errors from the framework to Crashlytics
+    FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
 
-  // Pass all uncaught asynchronous errors that aren't handled by the Flutter framework to Crashlytics
-  PlatformDispatcher.instance.onError = (error, stack) {
-    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
-    return true;
-  };
+    // Pass all uncaught asynchronous errors that aren't handled by the Flutter framework to Crashlytics
+    PlatformDispatcher.instance.onError = (error, stack) {
+      FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+      return true;
+    };
+  } catch (err) {
+    debugPrint('[main] Firebase init failed — running without it: $err');
+  }
 
   // Release builds must never talk to a cleartext backend: login tokens
   // over plain http are sniffable on any shared network. Debug builds keep
@@ -41,9 +47,20 @@ Future<void> main() async {
     return;
   }
 
-  // Load persisted state, restore any session and sync in the background.
-  // The app is fully usable immediately — sync happens offline-first.
-  await GameData.instance.init();
+  // Load persisted state, restore any session. Corrupt persisted data must
+  // never brick the app before the first frame — a failed init still starts
+  // the app with fresh/default state. Sync happens after the first frame
+  // (GameData.init fires it non-blocking), so the splash never waits on the
+  // network.
+  try {
+    await GameData.instance.init();
+  } catch (err) {
+    debugPrint('[main] GameData init failed — starting fresh: $err');
+  }
+
+  // A dead session (refresh rejected, credentials wiped) must drop the
+  // cached user — otherwise the UI shows signed-in while every call 401s.
+  ApiClient.instance.onSessionExpired = GameData.instance.handleSessionExpired;
 
   // AdMob rewarded ads (store rewards + in-game hint recovery). Must never
   // block startup: a failed SDK init just means ads are unavailable.
@@ -64,15 +81,14 @@ Future<void> main() async {
     await PushNotificationService.instance.init();
   } catch (_) {}
 
-  // Initialize In-App Purchases
+  // Initialize In-App Purchases. Grants are settled SERVER-SIDE in
+  // IapService (POST /store/iap/verify → authoritative wallet) — never grant
+  // locally here, the next sync snapshot would wipe it.
   try {
     await IapService.instance.init();
     IapService.instance.onPurchaseSuccess = (def) {
-      if (def.isCoins) {
-        GameData.instance.addCoins(def.rewardAmount);
-      } else {
-        GameData.instance.addHints(def.rewardAmount);
-      }
+      debugPrint('[IAP] Settled ${def.id} — +${def.rewardAmount} '
+          '${def.isCoins ? 'coins' : 'hints'}');
     };
   } catch (_) {}
 
@@ -123,8 +139,23 @@ class _CleartextConfigErrorApp extends StatelessWidget {
   }
 }
 
-class PictureMatchApp extends StatelessWidget {
+class PictureMatchApp extends StatefulWidget {
   const PictureMatchApp({super.key});
+
+  @override
+  State<PictureMatchApp> createState() => _PictureMatchAppState();
+}
+
+class _PictureMatchAppState extends State<PictureMatchApp> {
+  @override
+  void initState() {
+    super.initState();
+    // Cold-start notification taps that arrived during the init chain are
+    // buffered in AppNav; flush them now that the navigator exists.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      AppNav.flushPending();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -133,6 +164,7 @@ class PictureMatchApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       navigatorKey: AppNav.key,
+      navigatorObservers: [AppNav.routeObserver],
       home: const HomeScreen(),
     );
   }

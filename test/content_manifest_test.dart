@@ -86,7 +86,9 @@ void main() {
       'world': 'orphan',
       'idx': 0,
       'title': 'Level O1',
-      'items': [],
+      'items': [
+        {'id': 'o1', 'word': 'Orphan', 'picture': '🧩', 'hint': 'hint'},
+      ],
     });
     final parsed = parseContentManifest(m)!;
     expect(parsed.orderedWorldKeys, ['animals', 'countries', 'orphan']);
@@ -116,14 +118,13 @@ void main() {
     expect(parsed.levels['countries']!.length, 3);
   });
 
-  test('empty-item levels still appear in the grid', () {
+  test('item-less levels (admin work-in-progress) are skipped, not shipped', () {
     final m = manifestWithLevels(18);
-    for (final l in (m['levels'] as List)) {
-      (l as Map)['items'] = <Map>[];
-    }
+    // Empty out the LAST animal level only — the other 17 must survive.
+    ((m['levels'] as List)[16] as Map)['items'] = <Map>[];
     final parsed = parseContentManifest(m)!;
-    expect(parsed.levels['animals']!.length, 9);
-    expect(parsed.levels['animals']![7].items, isEmpty);
+    expect(parsed.levels['animals']!.length, 8);
+    expect(parsed.levels['countries']!.length, 9);
   });
 
   test('returns null on a manifest without levels', () {

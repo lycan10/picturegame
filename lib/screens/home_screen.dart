@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:picture_match/core/ads_service.dart';
 import 'package:picture_match/core/api_client.dart';
+import 'package:picture_match/core/app_nav.dart';
 import 'package:picture_match/core/formatters.dart';
 import 'package:picture_match/core/game_data.dart';
 import 'package:picture_match/core/sound_service.dart';
@@ -120,13 +121,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ---- Actions ----------------------------------------------------------
   Future<void> _openCategory(String category) async {
-    // Guests watch a rewarded interstitial as their "ticket" to play; when
-    // no ad fills, they continue anyway so the flow never gets stuck.
-    if (game.isGuestLike) {
-      await AdsService.instance.showRewardedInterstitial(
-        onDone: () => _enterCategory(category),
-      );
-      if (mounted) setState(() {});
+    // Sign-in-only worlds stop guests here with the consistent modal; free
+    // worlds go straight to the level grid. Guests pay the rewarded
+    // interstitial PER LEVEL (in level selection) — this gate used to fire a
+    // second interstitial right before that one.
+    if (game.guestWorldLocked(category)) {
+      _showGuestWorldDialog(category);
       return;
     }
     _enterCategory(category);
@@ -157,10 +157,51 @@ class _HomeScreenState extends State<HomeScreen> {
         PageTransitions.slideFromRight(const StoreScreen()),
       );
 
-  void _openAchievements() => Navigator.push(
-        context,
-        PageTransitions.slideFromRight(const AchievementsScreen()),
-      );
+  void _openNotifications() {
+    // Server-backed inbox: guests get the one consistent sign-in modal
+    // instead of raw 401 snackbars.
+    if (game.isGuestLike) {
+      _gateNotifications();
+      return;
+    }
+    Navigator.push(
+      context,
+      PageTransitions.slideFromRight(const NotificationsScreen()),
+    );
+  }
+
+  Future<void> _gateNotifications() async {
+    await ensureSignedIn(
+      context,
+      title: 'Sign in to unlock',
+      message:
+          'Your notification inbox — contest invites, battle reminders and '
+          'results — lives with your account. Sign in to see it.',
+    );
+    if (mounted) setState(() {});
+  }
+
+  void _openAchievements() {
+    // Achievements read the server profile — gate guests consistently.
+    if (game.isGuestLike) {
+      _gateAchievements();
+      return;
+    }
+    Navigator.push(
+      context,
+      PageTransitions.slideFromRight(const AchievementsScreen()),
+    );
+  }
+
+  Future<void> _gateAchievements() async {
+    await ensureSignedIn(
+      context,
+      title: 'Sign in to unlock',
+      message: 'Achievements track your wins, streaks and collections across '
+          'the full game. Sign in to start earning them!',
+    );
+    if (mounted) setState(() {});
+  }
 
   void _showStreakDialog() {
     showDialog<void>(
@@ -213,6 +254,23 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             FilledButton.icon(
               onPressed: () async {
+                // Streaks live on the server — guests get the consistent
+                // sign-in modal instead of a raw 401 snackbar.
+                if (game.isGuestLike) {
+                  Navigator.pop(dialogCtx);
+                  final signedIn = await ensureSignedIn(
+                    context,
+                    title: 'Sign in to unlock',
+                    message:
+                        'Streaks are saved with your account so they survive '
+                        'across devices. Sign in to repair and keep streaks!',
+                  );
+                  if (mounted) setState(() {});
+                  if (!signedIn) return;
+                  // Re-open the dialog so the player can act right away.
+                  _showStreakDialog();
+                  return;
+                }
                 if (coins < cost) {
                   Navigator.pop(dialogCtx);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -286,8 +344,12 @@ class _HomeScreenState extends State<HomeScreen> {
         selectedIndex: selectedIndex,
         backgroundColor: Colors.white,
         indicatorColor: AppColors.purple.withValues(alpha: 0.14),
-        onDestinationSelected: (index) =>
-            setState(() => _selectedIndex = index),
+        onDestinationSelected: (index) {
+          setState(() => _selectedIndex = index);
+          // IndexedStack tabs emit no route events — publish the tab so
+          // data-fetching screens (leaderboard, arena) re-fetch on view.
+          AppNav.homeTab.value = index;
+        },
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.home_outlined),
@@ -481,13 +543,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ],
-    );
-  }
-
-  void _openNotifications() {
-    Navigator.push(
-      context,
-      PageTransitions.slideFromRight(const NotificationsScreen()),
     );
   }
 

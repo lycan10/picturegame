@@ -449,7 +449,7 @@ class _NativeAdWidgetState extends State<NativeAdWidget> {
     _ad = ad;
     // Never let an ad failure (tests, offline, uncreated ad unit) crash the
     // host screen.
-    ad.load().catchError((Object _) {});
+    _loadSafely(ad);
   }
 
   void _load() {
@@ -478,7 +478,26 @@ class _NativeAdWidgetState extends State<NativeAdWidget> {
       ),
     );
     _ad = ad;
-    ad.load().catchError((Object _) {});
+    _loadSafely(ad);
+  }
+
+  /// `ad.load()` can throw PlatformException SYNCHRONOUSLY (e.g. a missing
+  /// native ad factory) — `.catchError` only traps async errors, so a bare
+  /// call escapes into initState and, worse, the retry listener never fires.
+  void _loadSafely(NativeAd ad) {
+    try {
+      ad.load().catchError((Object _) {});
+    } catch (err) {
+      debugPrint('[ads] native load threw synchronously: $err');
+      ad.dispose();
+      _ad = null;
+      _attempts += 1;
+      if (_attempts <= 3 && mounted) {
+        Future<void>.delayed(Duration(seconds: 10 * _attempts), () {
+          if (mounted && !_loaded) _load();
+        });
+      }
+    }
   }
 
   @override

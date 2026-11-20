@@ -6,6 +6,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../core/notification_service.dart';
 import '../core/game_data.dart';
 import '../core/formatters.dart';
+import '../core/login_gate.dart';
 import '../theme/app_theme.dart';
 import 'achievement_screen.dart';
 import 'change_password_screen.dart';
@@ -845,36 +846,45 @@ class _ProfileScreenState extends State<ProfileScreen> {
             );
           }),
           _divider(),
-          _accountTile(
-            icon: Icons.people_alt_rounded,
-            title: 'Friends',
-            subtitle: 'Add friends, answer requests, battle together',
-            onTap: () => Navigator.push<void>(
-              context,
-              MaterialPageRoute(builder: (_) => const FriendsScreen()),
-            ),
-          ),
+          Builder(builder: (_) {
+            return _accountTile(
+              icon: Icons.people_alt_rounded,
+              title: 'Friends',
+              subtitle: 'Add friends, answer requests, battle together',
+              onTap: () => _gateAndPush(
+                message: 'Friends are for signed-in players — add the people '
+                    'you meet in battles and on the leaderboard, then '
+                    'challenge them anytime!',
+                screen: const FriendsScreen(),
+              ),
+            );
+          }),
           _divider(),
-          _accountTile(
-            icon: Icons.account_balance_rounded,
-            title: 'Payout details',
-            subtitle: 'Where your contest cash prizes are sent',
-            onTap: () => Navigator.push<void>(
-              context,
-              MaterialPageRoute(builder: (_) => const PayoutDetailsScreen()),
-            ),
-          ),
+          Builder(builder: (_) {
+            return _accountTile(
+              icon: Icons.account_balance_rounded,
+              title: 'Payout details',
+              subtitle: 'Where your contest cash prizes are sent',
+              onTap: () => _gateAndPush(
+                message: 'Contest cash prizes are paid to your bank account. '
+                    'Sign in and add your payout details to claim prizes!',
+                screen: const PayoutDetailsScreen(),
+              ),
+            );
+          }),
           _divider(),
-          _accountTile(
-            icon: Icons.lock_outline_rounded,
-            title: 'Privacy & Security',
-            subtitle: 'Leaderboard visibility, data export, account deletion',
-            onTap: () => Navigator.push<void>(
-              context,
-              MaterialPageRoute(
-                  builder: (_) => const PrivacySecurityScreen()),
-            ),
-          ),
+          Builder(builder: (_) {
+            return _accountTile(
+              icon: Icons.lock_outline_rounded,
+              title: 'Privacy & Security',
+              subtitle: 'Leaderboard visibility, data export, account deletion',
+              onTap: () => _gateAndPush(
+                message: 'Privacy controls, data export and account deletion '
+                    'apply to your account. Sign in to manage them.',
+                screen: const PrivacySecurityScreen(),
+              ),
+            );
+          }),
           _divider(),
           if (game.isLoggedIn && !game.isGuest) ...[
             _accountTile(
@@ -973,6 +983,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _showMessage(BuildContext context, String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
+    );
+  }
+
+  /// Server-backed screens get the ONE consistent sign-in modal for guests
+  /// / signed-out players instead of raw 401 snackbars (app-wide gate rule).
+  Future<void> _gateAndPush({
+    required String message,
+    required Widget screen,
+  }) async {
+    if (game.isGuestLike) {
+      final signedIn = await ensureSignedIn(context, message: message);
+      if (!signedIn || !mounted) return;
+    }
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => screen),
     );
   }
 

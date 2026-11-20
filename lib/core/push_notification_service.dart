@@ -3,8 +3,10 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
 
+import '../core/login_gate.dart';
 import '../screens/contest_screen.dart';
 import '../screens/battle_game_screen.dart';
 import '../screens/battle_screen.dart';
@@ -61,20 +63,26 @@ class PushNotificationService {
           body: message.notification?.body ?? '',
           payload: jsonEncode(message.data),
         );
+        // Inbox notifications carry their id — record it so the sync mirror
+        // doesn't fire a SECOND local notification for the same item.
+        final notificationId = message.data['notificationId'];
+        if (notificationId is String && notificationId.isNotEmpty) {
+          GameData.instance.markNotificationLocallyShown(notificationId);
+        }
       });
 
       // Tap handling: tray taps while backgrounded, cold-start taps, and taps
       // on locally-shown notifications (foreground mirror).
       FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-        _handleTap(message.data);
+        handleDeepLink(message.data);
       });
       FirebaseMessaging.instance.getInitialMessage().then((message) {
-        if (message != null) _handleTap(message.data);
+        if (message != null) handleDeepLink(message.data);
       });
       NotificationService.tapStream.listen((payload) {
         if (payload == null || payload.isEmpty) return;
         try {
-          _handleTap(jsonDecode(payload) as Map<String, dynamic>);
+          handleDeepLink(jsonDecode(payload) as Map<String, dynamic>);
         } catch (_) {}
       });
 
@@ -97,8 +105,10 @@ class PushNotificationService {
     if (GameData.instance.isLoggedIn) _register();
   }
 
-  /// Deep-links notification taps by payload kind.
-  void _handleTap(Map<String, dynamic> data) {
+  /// Deep-links a notification tap (push payload OR an inbox row's `data`)
+  /// to the screen for further action. Public so the notifications screen
+  /// routes its rows through the exact same mapping as tray taps.
+  void handleDeepLink(Map<String, dynamic> data) {
     final code = data['code'];
     switch (data['kind']) {
       case 'quick_invite':
@@ -115,13 +125,38 @@ class PushNotificationService {
         if (code is String && code.isNotEmpty) {
           AppNav.push(BattleGameScreen(code: code));
         }
+      case 'battle_cancelled':
+        // Nothing actionable in-app beyond seeing the arena.
+        AppNav.push(const BattleScreen());
       case 'friend_request':
       case 'friend_accepted':
       case 'friends':
-        AppNav.push(const FriendsScreen());
+        _openGated(
+          const FriendsScreen(),
+          message: 'Friends are for signed-in players — add the people you '
+              'meet in battles and on the leaderboard, then challenge them '
+              'anytime!',
+        );
       case 'contest':
-        AppNav.push(const ContestScreen());
+        _openGated(
+          const ContestScreen(),
+          message: 'The bi-weekly contest is for signed-in players — top 10 '
+              'battle in a knockout for cash prizes!',
+        );
     }
+  }
+
+  /// Server-backed deep links get the ONE consistent sign-in modal for
+  /// guests (they'd only hit 401s inside); battle screens are unreachable
+  /// for guests by design, so they stay ungated.
+  void _openGated(Widget screen, {required String message}) {
+    final context = AppNav.key.currentContext;
+    if (context == null) return;
+    if (GameData.instance.isGuestLike) {
+      ensureSignedIn(context, message: message);
+      return;
+    }
+    AppNav.push(screen);
   }
 
   Future<void> _register() async {
